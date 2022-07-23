@@ -10,6 +10,6 @@
 /*! \brief
  * Process REGISTER request and save it's contacts
  */
-int sip_register(struct sip_msg* _m, void* _d, str* _f, str* _s, str* _owtag);
+int sip_register(struct sip_msg* _m, str* domain, str* _table);
 
 #endif //OPENSIPS_SIP_REGISTER_H

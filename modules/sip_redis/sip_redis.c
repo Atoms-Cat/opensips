@@ -4,7 +4,24 @@
 /*! \brief
  * Module exports structure
  */
+#include <stdio.h>
+
+#include "../../sr_module.h"
+#include "../../timer.h"
+#include "../../dprint.h"
+#include "../../error.h"
+#include "../../socket_info.h"
+#include "../../pvar.h"
+#include "../../mod_fix.h"
+#include "../../lib/reg/config.h"
+#include "../../lib/reg/pn.h"
+#include "../../lib/reg/common.h"
+
+#include "../usrloc/ul_mod.h"
+#include "../signaling/signaling.h"
+
 #include "sip_redis.h"
+#include "sip_register.h"
 
 static int  mod_init(void);
 static int  child_init(int);
@@ -12,14 +29,11 @@ static void mod_destroy(void);
 
 usrloc_api_t ul;
 
-static int domain_fixup(void** param);
-
 static cmd_export_t cmds[] = {
         {"sip_register", (cmd_function)sip_register, {
-                {CMD_PARAM_STR|CMD_PARAM_STATIC, domain_fixup, 0},
-                {CMD_PARAM_STR|CMD_PARAM_OPT,0,0},
-                {CMD_PARAM_STR|CMD_PARAM_OPT,0,0},
-                {CMD_PARAM_STR|CMD_PARAM_OPT,0,0}, {0,0,0}},
+                {CMD_PARAM_STR, 0, 0},
+                {CMD_PARAM_STR, 0, 0},
+                {0,0,0}},
          REQUEST_ROUTE|ONREPLY_ROUTE}
 };
 
@@ -68,26 +82,3 @@ static int child_init(int rank)
     return 0;
 }
 
-
-
-/*! \brief
- * Convert char* parameter to udomain_t* pointer
- */
-static int domain_fixup(void** param)
-{
-    udomain_t* d;
-    str d_nt;
-
-    if (pkg_nt_str_dup(&d_nt, (str*)*param) < 0)
-        return E_OUT_OF_MEM;
-
-    if (ul.register_udomain(d_nt.s, &d) < 0) {
-        LM_ERR("failed to register domain\n");
-        return E_UNSPEC;
-    }
-
-    pkg_free(d_nt.s);
-
-    *param = (void*)d;
-    return 0;
-}

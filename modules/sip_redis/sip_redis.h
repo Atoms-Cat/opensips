@@ -12,10 +12,6 @@
 #include "../signaling/signaling.h"
 #include "../tm/tm_load.h"
 
-#include "../../lib/reg/config.h"
-#include "../../lib/reg/pn.h"
-#include "../../lib/reg/common.h"
 
-#include "sip_register.h"
 
 #endif //OPENSIPS_USRLOC_REDIS_H
