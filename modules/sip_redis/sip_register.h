@@ -11,6 +11,6 @@
 /*! \brief
  * Process REGISTER request and save it's contacts
  */
-int sip_register(struct sip_msg* _m, str* domain, cachedb_con *con);
+int sip_register(struct sip_msg* _m, str* aor, cachedb_con *con);
 
 #endif //OPENSIPS_SIP_REGISTER_H

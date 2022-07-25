@@ -90,7 +90,6 @@ static int mod_init(void)
     }
 
     LM_DBG("binding to specific module, based on URL\n");
-
     if (cachedb_bind_mod(&cachedb_url,&cdbf) < 0) {
         LM_ERR("failed to bind to mod\n");
         return -1;
@@ -113,7 +112,6 @@ static int get_cachedb_url(void **arg) {
         return -1;
     }
     *arg = con;
-
     return 0;
 }
 

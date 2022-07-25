@@ -12,16 +12,18 @@
 cachedb_funcs cdbf;
 
 
-int sip_register(struct sip_msg* _m, str* domain, cachedb_con *con)
+int sip_register(struct sip_msg* _m, str* aor, cachedb_con *con)
 {
     str body;
+    str* uri;
     str key = str_init("opensips_online");
     str value = str_init("1");
+    int requested_exp = 0;
 
     struct sip_msg* msg = _m;
     struct to_body* from_b;
     struct hdr_field* to_hdr_field;
-
+    exp_body_t *expires;
 
     LM_INFO("initializing sip_register ...\n");
 
@@ -53,10 +55,22 @@ int sip_register(struct sip_msg* _m, str* domain, cachedb_con *con)
         return -1;
     }
 
-    if (cdbf.set(con,&key,&value,0) < 0) {
+    expires = (exp_body_t*)msg->expires->parsed;
+    if (expires != NULL) {
+        LM_INFO("\n........\nexpires : %s\n........\n", expires->text);
+    }
+
+    if (cdbf.set(con,&key,&value, requested_exp) < 0) {
         LM_ERR("failed to set key\n");
         return -1;
     }
+
+    if (!uri) {
+        from_b = get_to(_m);
+        //uri = &from_b->uri;
+    }
+
+    LM_INFO("\n........\nto : %s\n........\n", from_b->uri.s);
 
     return 1;
 }
