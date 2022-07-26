@@ -17,6 +17,7 @@
 #include "../../lib/reg/pn.h"
 #include "../../lib/reg/common.h"
 
+
 #include "../usrloc/ul_mod.h"
 #include "../signaling/signaling.h"
 #include "../../cachedb/cachedb.h"
@@ -105,7 +106,7 @@ static void mod_destroy(void)
 {
 
 }
-
+//  获取 redis 链接池，并且穿给 sip_register 函数
 static int get_cachedb_url(void **arg) {
     if (con == NULL) {
         LM_ERR("failed to connect to back-end\n");
