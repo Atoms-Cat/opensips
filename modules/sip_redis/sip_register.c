@@ -15,12 +15,15 @@ cachedb_funcs cdbf;
 
 static char aor[MAX_RAW_QUERY_SIZE];
 static str aor_str;
+static char expires[MAX_RAW_QUERY_SIZE];
+static str expires_str;
+
 
 int sip_register(struct sip_msg* msg, str* domain, cachedb_con *con)
 {
     int i;
     str body;
-    int requested_exp = 0;
+    int *requested_exp = 0;
     struct to_body* toBody;
     struct hdr_field* to_hdr_field;
 
@@ -44,13 +47,19 @@ int sip_register(struct sip_msg* msg, str* domain, cachedb_con *con)
     to_hdr_field = get_header_by_static_name(msg, "To");
     parse_to(to_hdr_field->body.s, to_hdr_field->body.s + to_hdr_field->body.len, toBody);
 
-    i = snprintf(aor, sizeof(aor),
-             "%.*s",
-             toBody->uri.len, ZSW(toBody->uri.s));
-
-    LM_INFO("\n........\nexpires : %.*s\n........\n", msg->expires->body.len, ZSW(msg->expires->body.s));
+    /* get sip `to` header to str */
+    i = snprintf(aor, sizeof(aor), "%.*s", toBody->uri.len, ZSW(toBody->uri.s));
     aor_str.s = aor;
     aor_str.len = i;
+
+    /* get sip `expires` header to str */
+    i = snprintf(expires, sizeof(expires), "%.*s", msg->expires->body.len, ZSW(msg->expires->body.s));
+    expires_str.s = expires;
+    expires_str.len = i;
+    str2int(&expires_str, &requested_exp);
+
+    LM_INFO("\n........\nexpires : %.*s\n........\n", msg->expires->body.len, ZSW(msg->expires->body.s));
+
 
     if (con == NULL) {
         LM_ERR("failed to connect to back-end\n");
