@@ -4,6 +4,7 @@
 #include "../../str.h"
 #include "../../socket_info.h"
 #include "../../lib/reg/common.h"
+#include "../../lib/cJSON.h"
 
 #include "sip_redis.h"
 #include "sip_register.h"
@@ -17,13 +18,40 @@ static char aor[MAX_RAW_QUERY_SIZE];
 static str aor_str;
 static char expires[MAX_RAW_QUERY_SIZE];
 static str expires_str;
+static str socketJson_str;
 
+
+cJSON* print_socket(void)
+{
+    cJSON *socket_json = cJSON_CreateObject(), *item = cJSON_CreateObject();
+    struct socket_info *si;
+    int i;
+
+    for (i = PROTO_FIRST; i < PROTO_LAST; i++) {
+        if (protos[i].id == PROTO_NONE)
+            continue;
+
+        for (si = protos[i].listeners; si; si = si->next) {
+            printf("%s:%s:%s\n", protos[i].name, si->address_str.s, si->port_no_str.s);
+            cJSON_AddItemToObject(item, "ip", cJSON_CreateString(si->address_str.s));
+            cJSON_AddItemToObject(item, "port", cJSON_CreateString(si->port_no_str.s));
+            cJSON_AddItemToObject(item, "name", cJSON_CreateString(si->name.s));
+            cJSON_AddItemToObject(item, "socket", cJSON_CreateNumber(si->socket));
+            cJSON_AddItemReferenceToObject(socket_json, protos[i].name, item);
+            item = cJSON_CreateObject();
+        }
+    }
+
+    LM_INFO("socket_json: %s\n", cJSON_Print(socket_json));
+    return socket_json;
+}
 
 int sip_register(struct sip_msg* msg, str* domain, cachedb_con *con)
 {
     int i;
     str body;
     int *requested_exp = 0;
+    cJSON *socket_json;
     struct to_body* toBody;
     struct hdr_field* to_hdr_field;
 
@@ -42,11 +70,10 @@ int sip_register(struct sip_msg* msg, str* domain, cachedb_con *con)
         return -1;
     }
 
-    /* now parse it!! */
+    /* get sip `to` header to to_body */
     memset(toBody, 0, sizeof(struct to_body));
     to_hdr_field = get_header_by_static_name(msg, "To");
     parse_to(to_hdr_field->body.s, to_hdr_field->body.s + to_hdr_field->body.len, toBody);
-
     /* get sip `to` header to str */
     i = snprintf(aor, sizeof(aor), "%.*s", toBody->uri.len, ZSW(toBody->uri.s));
     aor_str.s = aor;
@@ -58,15 +85,21 @@ int sip_register(struct sip_msg* msg, str* domain, cachedb_con *con)
     expires_str.len = i;
     str2int(&expires_str, &requested_exp);
 
-    LM_INFO("\n........\nexpires : %.*s\n........\n", msg->expires->body.len, ZSW(msg->expires->body.s));
-
+    // todo
+    if (msg->force_send_socket != NULL) {
+        LM_INFO("\n........\nforce_send_socket : %s\n........\n", msg->force_send_socket->socket);
+    }
 
     if (con == NULL) {
         LM_ERR("failed to connect to back-end\n");
         return -1;
     }
 
-    if (cdbf.set(con, &aor_str, &aor_str, requested_exp) < 0) {
+    socket_json = print_socket();
+    socketJson_str.s = cJSON_Print(socket_json);
+    socketJson_str.len = strlen(cJSON_Print(socket_json));
+
+    if (cdbf.set(con, &aor_str, &socketJson_str, requested_exp) < 0) {
         LM_ERR("failed to set key\n");
         return -1;
     }
