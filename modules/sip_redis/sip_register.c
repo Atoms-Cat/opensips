@@ -18,10 +18,12 @@ static char aor[MAX_RAW_QUERY_SIZE];
 static str aor_str;
 static char expires[MAX_RAW_QUERY_SIZE];
 static str expires_str;
+static char transport[MAX_RAW_QUERY_SIZE];
+static str transport_str;
 static str socketJson_str;
 
 
-cJSON* print_socket(void)
+cJSON* get_all_socket(void)
 {
     cJSON *socket_json = cJSON_CreateObject(), *item = cJSON_CreateObject();
     struct socket_info *si;
@@ -32,7 +34,7 @@ cJSON* print_socket(void)
             continue;
 
         for (si = protos[i].listeners; si; si = si->next) {
-            printf("%s:%s:%s\n", protos[i].name, si->address_str.s, si->port_no_str.s);
+//            printf("%s:%s:%s\n", protos[i].name, si->address_str.s, si->port_no_str.s);
             cJSON_AddItemToObject(item, "ip", cJSON_CreateString(si->address_str.s));
             cJSON_AddItemToObject(item, "port", cJSON_CreateString(si->port_no_str.s));
             cJSON_AddItemToObject(item, "name", cJSON_CreateString(si->name.s));
@@ -85,17 +87,23 @@ int sip_register(struct sip_msg* msg, str* domain, cachedb_con *con)
     expires_str.len = i;
     str2int(&expires_str, &requested_exp);
 
-    // todo
-    if (msg->force_send_socket != NULL) {
-        LM_INFO("\n........\nforce_send_socket : %s\n........\n", msg->force_send_socket->socket);
-    }
-
     if (con == NULL) {
         LM_ERR("failed to connect to back-end\n");
         return -1;
     }
 
-    socket_json = print_socket();
+    // 获取opensips服务地址
+    socket_json = get_all_socket();
+
+    // register 时使用那个协议 transport
+    if (msg->via1 != NULL) {
+        /* get sip `transport` header via1 to str */
+        i = snprintf(transport, sizeof(transport), "%.*s", msg->via1->transport.len, ZSW(msg->via1->transport.s));
+        transport_str.s = transport;
+        transport_str.len = i;
+        cJSON_AddItemToObject(socket_json, "transport", cJSON_CreateString(transport_str.s));
+    }
+
     socketJson_str.s = cJSON_Print(socket_json);
     socketJson_str.len = strlen(cJSON_Print(socket_json));
 
