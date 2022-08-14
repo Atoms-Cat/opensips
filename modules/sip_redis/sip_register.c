@@ -30,11 +30,11 @@ cJSON* get_all_socket(void)
     int i;
 
     for (i = PROTO_FIRST; i < PROTO_LAST; i++) {
-        if (protos[i].id == PROTO_NONE)
+        if (protos[i].id == PROTO_NONE) {
             continue;
+        }
 
         for (si = protos[i].listeners; si; si = si->next) {
-//            printf("%s:%s:%s\n", protos[i].name, si->address_str.s, si->port_no_str.s);
             cJSON_AddItemToObject(item, "ip", cJSON_CreateString(si->address_str.s));
             cJSON_AddItemToObject(item, "port", cJSON_CreateString(si->port_no_str.s));
             cJSON_AddItemToObject(item, "name", cJSON_CreateString(si->name.s));

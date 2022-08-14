@@ -23,6 +23,7 @@
 #include "../../cachedb/cachedb.h"
 
 #include "sip_redis.h"
+#include "sip_invite.h"
 #include "sip_register.h"
 
 str cachedb_url;
@@ -42,7 +43,13 @@ static cmd_export_t cmds[] = {
                 {CMD_PARAM_STR, 0, 0},
                 {CMD_PARAM_STR, get_cachedb_url, 0},
                 {0,0,0}},
-         REQUEST_ROUTE|ONREPLY_ROUTE}
+         REQUEST_ROUTE|ONREPLY_ROUTE},
+        {"sip_invite", (cmd_function)sip_invite, {
+                {CMD_PARAM_STR, get_cachedb_url, 0},
+                {0,0,0}},
+         ALL_ROUTES},
+
+        {0,0,{{0,0,0}},0}
 };
 
 static param_export_t params[]={
