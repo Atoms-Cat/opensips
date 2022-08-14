@@ -10,9 +10,14 @@
 #include "sip_invite.h"
 
 
-int sip_invite(struct sip_msg* _m, cachedb_con *con)
+int sip_invite(struct sip_msg* msg, cachedb_con *con)
 {
+
+
     LM_INFO("initializing sip_invite ...\n");
+
+    LM_INFO("sip_invite headers: \n........\n%s\n........\n", msg->headers->name.s);
+
 
     return 1;
 }
