@@ -1553,12 +1553,14 @@ static void rtp_relay_indlg(struct dlg_cell* dlg, int type, struct dlg_cb_params
 		} else {
 			rtp_sess_set_late(sess);
 		}
+	} else if (body && msg->REQ_METHOD == METHOD_INVITE) {
+		rtp_sess_reset_late(ctx->established);
 	}
 	RTP_RELAY_CTX_UNLOCK(ctx);
 	if (!ret)
 		return;
 	if (msg->REQ_METHOD == METHOD_ACK) {
-		if (sess || !rtp_sess_late(sess))
+		if (!sess || !rtp_sess_late(sess))
 			return;
 		memset(&info, 0, sizeof info);
 		info.msg = msg;
