@@ -130,10 +130,17 @@ static void srec_dlg_end(struct dlg_cell *dlg, int type, struct dlg_cb_params *_
 	}
 	ss = *_params->param;
 
+	if ((ss->flags & SIPREC_STARTED) == 0) {
+		LM_DBG("sess=%p no longer in progress\n", ss);
+		/* the session was not started, or it had been deleted in the meantime */
+		return;
+	}
+
 	memset(&req, 0, sizeof(req));
 	req.et = B2B_CLIENT;
 	req.b2b_key = &ss->b2b_key;
 	req.method = &bye;
+	req.dlginfo = ss->dlginfo;
 	req.no_cb = 1; /* do not call callback */
 
 	if (srec_b2b.send_request(&req) < 0)
@@ -148,6 +155,11 @@ static void srec_dlg_sequential(struct dlg_cell *dlg, int type, struct dlg_cb_pa
 	struct src_sess *ss;
 	/* check which participant we are talking about */
 	ss = *_params->param;
+
+	if ((ss->flags & SIPREC_STARTED) == 0) {
+		LM_DBG("sess=%p no longer pending\n", ss);
+		return;
+	}
 
 	SIPREC_LOCK(ss);
 
@@ -209,6 +221,7 @@ int srec_reply(struct src_sess *ss, int method, int code, str *body)
 	reply_data.code = code;
 	reply_data.text = &reason;
 	reply_data.body = body;
+	reply_data.dlginfo = ss->dlginfo;
 	if (body)
 		reply_data.extra_headers = &content_type_sdp_hdr;
 
@@ -254,6 +267,10 @@ static int srec_b2b_notify(struct sip_msg *msg, str *key, int type,
 		LM_ERR("cannot find session in parameter!\n");
 		return -1;
 	}
+	if ((ss->flags & SIPREC_STARTED) == 0) {
+		LM_DBG("sess=%p no longer active\n", ss);
+		return 0;
+	}
 	/* for now we only receive replies from SRS */
 	if (type != B2B_REPLY)
 		return srec_b2b_req(msg, ss);
@@ -289,6 +306,7 @@ static int srec_b2b_notify(struct sip_msg *msg, str *key, int type,
 	req.et = B2B_CLIENT;
 	req.b2b_key = &ss->b2b_key;
 	req.method = &ack;
+	req.dlginfo = ss->dlginfo;
 	req.no_cb = 1; /* do not call callback */
 
 	if (srec_b2b.send_request(&req) < 0) {
@@ -332,6 +350,7 @@ no_recording:
 		req.et = B2B_CLIENT;
 		req.b2b_key = &ss->b2b_key;
 		req.method = &bye;
+		req.dlginfo = ss->dlginfo;
 		req.no_cb = 1; /* do not call callback */
 
 		if (srec_b2b.send_request(&req) < 0)
@@ -341,12 +360,15 @@ no_recording:
 	srec_rtp.copy_delete(ss->rtp, &mod_name, &ss->media);
 	srec_logic_destroy(ss);
 
-	/* we finishd everything with the dialog, let it be! */
-	srec_dlg.dlg_ctx_put_ptr(ss->dlg, srec_dlg_idx, NULL);
-	srec_dlg.dlg_unref(ss->dlg, 1);
-	ss->dlg = NULL;
-	srec_hlog(ss, SREC_UNREF, "no recording");
-	SIPREC_UNREF(ss);
+	if (!(ss->flags & SIPREC_DLG_CBS)) {
+		/* if the dialog has already been engaged, then we need to keep the
+		 * reference until the end of the dialog, where it will be cleaned up */
+		srec_dlg.dlg_ctx_put_ptr(ss->dlg, srec_dlg_idx, NULL);
+		srec_dlg.dlg_unref(ss->dlg, 1);
+		ss->dlg = NULL;
+		srec_hlog(ss, SREC_UNREF, "no recording");
+		SIPREC_UNREF(ss);
+	}
 	return ret;
 }
 
@@ -370,7 +392,6 @@ int srec_restore_callback(struct src_sess *sess)
 
 static int srec_b2b_confirm(str* logic_key, str* entity_key, int src, b2b_dlginfo_t* info, void *param)
 {
-	char *tmp;
 	struct src_sess *ss;
 
 	ss = (struct src_sess *)param;
@@ -379,32 +400,11 @@ static int srec_b2b_confirm(str* logic_key, str* entity_key, int src, b2b_dlginf
 				entity_key->len, entity_key->s);
 		return -1;
 	}
-	tmp = shm_malloc(info->fromtag.len);
-	if (!tmp) {
-		LM_ERR("cannot allocate dialog info fromtag!\n");
+	ss->dlginfo = b2b_dup_dlginfo(info);
+	if (!ss->dlginfo) {
+		LM_ERR("could not duplicate b2b dialog info!\n");
 		return -1;
 	}
-	ss->b2b_fromtag.s = tmp;
-	ss->b2b_fromtag.len = info->fromtag.len;
-	memcpy(ss->b2b_fromtag.s, info->fromtag.s, ss->b2b_fromtag.len);
-
-	tmp = shm_malloc(info->totag.len);
-	if (!tmp) {
-		LM_ERR("cannot allocate dialog info totag!\n");
-		return -1;
-	}
-	ss->b2b_totag.s = tmp;
-	ss->b2b_totag.len = info->totag.len;
-	memcpy(ss->b2b_totag.s, info->totag.s, ss->b2b_totag.len);
-
-	tmp = shm_malloc(info->callid.len);
-	if (!tmp) {
-		LM_ERR("cannot allocate dialog info callid!\n");
-		return -1;
-	}
-	ss->b2b_callid.s = tmp;
-	ss->b2b_callid.len = info->callid.len;
-	memcpy(ss->b2b_callid.s, info->callid.s, ss->b2b_callid.len);
 	return 0;
 }
 
@@ -482,10 +482,12 @@ static int srs_send_invite(struct src_sess *sess)
 	sess->b2b_key.s = shm_malloc(client->len);
 	if (!sess->b2b_key.s) {
 		LM_ERR("out of shm memory!\n");
+		pkg_free(client);
 		return -1;
 	}
 	memcpy(sess->b2b_key.s, client->s, client->len);
 	sess->b2b_key.len = client->len;
+	pkg_free(client);
 
 	return 0;
 }
@@ -566,6 +568,7 @@ static void srs_send_update_invite(struct src_sess *sess, str *body)
 	req.b2b_key = &sess->b2b_key;
 	req.method = &inv;
 	req.extra_headers = &extra_headers;
+	req.dlginfo = sess->dlginfo;
 	req.body = body;
 
 	if (srec_b2b.send_request(&req) < 0)
@@ -643,7 +646,6 @@ void tm_start_recording(struct cell *t, int type, struct tmcb_params *ps)
 
 void srec_logic_destroy(struct src_sess *sess)
 {
-	b2b_dlginfo_t info;
 	if (!sess->b2b_key.s)
 		return;
 	shm_free(sess->b2b_key.s);
@@ -651,19 +653,12 @@ void srec_logic_destroy(struct src_sess *sess)
 	if (sess->initial_sdp.s)
 		shm_free(sess->initial_sdp.s);
 
-	info.fromtag = sess->b2b_fromtag;
-	info.totag = sess->b2b_totag;
-	info.callid = sess->b2b_callid;
-	srec_b2b.entity_delete(B2B_CLIENT, &sess->b2b_key,
-			(info.callid.s ? &info: NULL), 1, 1);
-	if (sess->b2b_fromtag.s)
-		shm_free(sess->b2b_fromtag.s);
-	if (sess->b2b_totag.s)
-		shm_free(sess->b2b_totag.s);
-	if (sess->b2b_callid.s)
-		shm_free(sess->b2b_callid.s);
-	sess->b2b_callid.s = sess->b2b_totag.s = sess->b2b_fromtag.s = NULL;
+	srec_b2b.entity_delete(B2B_CLIENT, &sess->b2b_key, sess->dlginfo, 1, 1);
+	if (sess->dlginfo)
+		shm_free(sess->dlginfo);
 	sess->b2b_key.s = NULL;
+
+	sess->flags &= ~SIPREC_STARTED;
 }
 
 struct src_sess *src_get_session(void)
