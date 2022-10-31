@@ -45,7 +45,8 @@ static struct list_head *rtp_relay_contexts;
 		current_processing_ctx, rtp_relay_ctx_idx):NULL)
 #define RTP_RELAY_PUT_CTX(_p) context_put_ptr(CONTEXT_GLOBAL, \
 		current_processing_ctx, rtp_relay_ctx_idx, (_p))
-#define RTP_RELAY_GET_TM_CTX(_t) (rtp_relay_tmb.t_ctx_get_ptr(_t, rtp_relay_tm_ctx_idx))
+#define RTP_RELAY_GET_TM_CTX(_t) \
+	(current_processing_ctx?rtp_relay_tmb.t_ctx_get_ptr(_t, rtp_relay_tm_ctx_idx):NULL)
 #define RTP_RELAY_PUT_TM_CTX(_t, _p) \
 	rtp_relay_tmb.t_ctx_put_ptr(_t, rtp_relay_tm_ctx_idx, _p)
 
@@ -2148,6 +2149,11 @@ static int rtp_relay_reinvite_reply(struct sip_msg *msg,
 	if (!param) {
 		LM_BUG("cannot get reinvite param!\n");
 		return -1;
+	}
+
+	if (msg == NULL || msg == FAKED_REPLY) {
+		/* we only care about actual replies */
+		goto error;
 	}
 
 	switch (tmp->state) {

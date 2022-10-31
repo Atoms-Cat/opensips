@@ -477,10 +477,16 @@ int dlg_update_leg_info(int leg_idx, struct dlg_cell *dlg, str* tag, str *rr,
 	struct dlg_leg *leg;
 	rr_t *head = NULL, *rrp;
 
+	/*
+	 * we should not limit the number of dialog legs to the number of tm
+	 * branches, as for a single branch, we can have multiple legs (resulted
+	 * due to parallel forking) downstream.
+	 *
 	if (leg_idx >= MAX_BRANCHES) {
 		LM_WARN("invalid callee leg index (branch id part): %d\n", leg_idx);
 		return -1;
 	}
+	*/
 
 	if (ensure_leg_array(leg_idx + 1, dlg) != 0)
 		return -1;
@@ -751,7 +757,8 @@ int dlg_update_routing(struct dlg_cell *dlg, unsigned int leg,
 
 
 
-struct dlg_cell* lookup_dlg( unsigned int h_entry, unsigned int h_id)
+struct dlg_cell* lookup_dlg( unsigned int h_entry, unsigned int h_id,
+															int active_only )
 {
 	struct dlg_cell *dlg;
 	struct dlg_entry *d_entry;
@@ -765,7 +772,7 @@ struct dlg_cell* lookup_dlg( unsigned int h_entry, unsigned int h_id)
 
 	for( dlg=d_entry->first ; dlg ; dlg=dlg->next ) {
 		if (dlg->h_id == h_id) {
-			if (dlg->state==DLG_STATE_DELETED) {
+			if (active_only && dlg->state==DLG_STATE_DELETED) {
 				dlg_unlock( d_table, d_entry);
 				goto not_found;
 			}
@@ -942,7 +949,7 @@ struct dlg_cell *get_dlg_by_dialog_id(str *dialog_id)
 		/* we might have a dialog did */
 		LM_DBG("ID: %*s (h_entry %u h_id %u)\n",
 				dialog_id->len, dialog_id->s, h_entry, h_id);
-		dlg = lookup_dlg(h_entry, h_id);
+		dlg = lookup_dlg(h_entry, h_id, 1);
 	}
 	if (!dlg) {
 		/* the ID is not a number, so let's consider
