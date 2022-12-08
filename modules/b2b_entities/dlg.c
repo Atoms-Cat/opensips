@@ -1678,6 +1678,7 @@ int b2b_send_reply(b2b_rpl_data_t* rpl_data)
 
 	if(parse_headers(msg, HDR_EOH_F, 0) < 0)
 	{
+		B2BE_LOCK_RELEASE(table, hash_index);
 		LM_ERR("Failed to parse headers\n");
 		return 0;
 	}
@@ -1685,6 +1686,7 @@ int b2b_send_reply(b2b_rpl_data_t* rpl_data)
 	pto = get_to(msg);
 	if (pto == NULL || pto->error != PARSE_OK)
 	{
+		B2BE_LOCK_RELEASE(table, hash_index);
 		LM_ERR("'To' header COULD NOT parsed\n");
 		return 0;
 	}
@@ -2666,6 +2668,7 @@ void b2b_tm_cback(struct cell *t, b2b_table htable, struct tmcb_params *ps)
 	int old_route_type;
 	bin_packet_t storage;
 	int b2b_ev = -1;
+	int lock_taken = 0;
 	struct b2b_context *ctx;
 	int b2b_cb_flags = 0;
 	unsigned int reqmask;
@@ -3402,8 +3405,9 @@ done1:
 b2b_route:
 
 	if (B2BE_SERIALIZE_STORAGE()) {
+		B2BE_LOCK_GET(htable, hash_index);
+		lock_taken = 1;
 		if (dlg_state == B2B_CONFIRMED && prev_state == B2B_MODIFIED) {
-			B2BE_LOCK_GET(htable, hash_index);
 
 			if (dlg->state != B2B_TERMINATED) {
 				b2b_ev = B2B_EVENT_UPDATE;
@@ -3411,10 +3415,8 @@ b2b_route:
 					&storage, serialize_backend);
 			} else {
 				b2b_ev = -1;
-				B2BE_LOCK_RELEASE(htable, hash_index);
 			}
 		} else if (b2b_ev == B2B_EVENT_CREATE) {
-			B2BE_LOCK_GET(htable, hash_index);
 
 			if (dlg->state != B2B_TERMINATED) {
 				b2b_run_cb(dlg, hash_index, etype, B2BCB_TRIGGER_EVENT, b2b_ev,
@@ -3424,7 +3426,6 @@ b2b_route:
 					b2be_db_insert(dlg, etype);
 			} else {
 				b2b_ev = -1;
-				B2BE_LOCK_RELEASE(htable, hash_index);
 			}
 		}
 	}
@@ -3449,8 +3450,9 @@ b2b_route:
 		if (b2be_db_update(dlg, etype) < 0)
 			LM_ERR("Failed to update in database\n");
 		B2BE_LOCK_RELEASE(htable, hash_index);
-	} else if (b2b_ev != -1)
+	} else if (lock_taken) {
 		B2BE_LOCK_RELEASE(htable, hash_index);
+	}
 
 	if (b2be_cluster) {
 		if (b2b_ev == B2B_EVENT_UPDATE)

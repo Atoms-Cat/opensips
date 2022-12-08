@@ -1,7 +1,5 @@
 /*
- * Flatstore module MI interface
- *
- * Copyright (C) 2006 Voice Sistem SRL
+ * Copyright (C) 2019 OpenSIPS Solutions
  *
  * This file is part of opensips, a free SIP server.
  *
@@ -17,22 +15,12 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301  USA
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301,USA
  */
 
-#include "flatstore_mod.h"
-#include "flat_mi.h"
+#ifndef __TEST_DIGEST_AUTH_H__
+#define __TEST_DIGEST_AUTH_H__
 
-/* helps ensure that there are no more pending writes on the old (rotated)
- * files, thus avoiding race conditions with external readers */
-rw_lock_t *rotate_lock;
+void test_lib_digest_auth(void);
 
-mi_response_t *mi_flat_rotate_cmd(const mi_params_t *params,
-								struct mi_handler *async_hdl)
-{
-	lock_start_write(rotate_lock);
-	(*flat_rotate)++;
-	lock_stop_write(rotate_lock);
-
-	return init_mi_result_ok();
-}
+#endif /* __TEST_DIGEST_AUTH_H__ */
