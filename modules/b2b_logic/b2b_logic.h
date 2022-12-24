@@ -33,9 +33,24 @@
 #include "../../timer.h"
 #include "../b2b_entities/b2be_load.h"
 
-#define B2B_BRIDGING_STATE      -1
-#define B2B_CANCEL_STATE        -2
-#define B2B_NOTDEF_STATE        -3
+enum b2b_tuple_state {
+	/* initial bridge state */
+	B2B_INIT_BRIDGING_STATE,
+
+	/* tmp state when bridging with B2BL_BR_FLAG_HOLD */
+	B2B_BRIDGING_HOLD_STATE,
+	/* tmp state when bridging with B2BL_BR_FLAG_RENEW_SDP */
+	B2B_BRIDGING_INIT_SDP_STATE,
+	/* main bridging state */
+	B2B_BRIDGING_STATE,
+
+	B2B_BRIDGED_STATE,
+
+	B2B_CANCEL_STATE
+};
+
+#define IS_BRIDGING_STATE(state) \
+	(state>=B2B_BRIDGING_HOLD_STATE && state <=B2B_BRIDGING_STATE)
 
 #define B2B_TOP_HIDING_SCENARY "top hiding"
 #define B2B_TOP_HIDING_SCENARY_LEN  strlen("top hiding")
@@ -53,12 +68,16 @@
 /* B2BL_FLAGS constants */
 #define		B2BL_FLAG_TRANSPARENT_AUTH	0x01
 #define		B2BL_FLAG_TRANSPARENT_TO	0x02
-#define		B2BL_FLAG_USE_INIT_SDP		0x04
 
-/* B2BL_BR_FLAGS constants */
-#define B2BL_BR_FLAG_NOTIFY			0x01
-#define B2BL_BR_FLAG_RETURN_AFTER_FAILURE	0x02
-#define B2BL_BR_FLAG_DONT_DELETE_BRIDGE_INITIATOR	0x04
+/* tuple bridge flags */
+#define B2BL_BR_FLAG_NOTIFY                        (1<<0)
+#define B2BL_BR_FLAG_RETURN_AFTER_FAILURE          (1<<1)
+#define B2BL_BR_FLAG_DONT_DELETE_BRIDGE_INITIATOR  (1<<2)
+#define B2BL_BR_FLAG_HOLD                          (1<<3)
+#define B2BL_BR_FLAG_RENEW_SDP                     (1<<4)
+#define B2BL_BR_FLAG_PROV_MEDIA                    (1<<5)
+#define B2BL_BR_FLAG_NO_OLD_ENT                    (1<<6)
+
 
 /* modes to write in db */
 #define NO_DB         0
@@ -88,8 +107,6 @@ struct b2b_params
 	int req_routeid;
 	int reply_routeid;
 	str *id;
-	str *init_body;
-	str *init_body_type;
 };
 
 struct b2b_bridge_params
@@ -111,7 +128,6 @@ enum pv_entity_field {
 extern str custom_headers_lst[HDR_LST_LEN];
 extern regex_t* custom_headers_re;
 extern int custom_headers_lst_len;
-extern int use_init_sdp;
 extern int contact_user;
 extern str server_address;
 extern pv_elem_t *server_address_pve;
@@ -136,6 +152,8 @@ extern str top_hiding_scen_s;
 extern str internal_scen_s;
 
 extern struct b2bl_route_ctx cur_route_ctx;
+
+extern str b2bl_mod_name;
 
 extern str requestTerminated;
 
@@ -176,6 +194,9 @@ static inline int b2b_get_request_id(str* request)
 
 	return -1;
 }
+
+#define get_tracer(_tuple) \
+	( (_tuple)->tracer.f ? &((_tuple)->tracer) : NULL )
 
 int b2b_add_dlginfo(str* key, str* entity_key,int src, b2b_dlginfo_t* info, void *param);
 int b2b_server_notify(struct sip_msg* msg, str* key, int type,

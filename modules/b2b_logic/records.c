@@ -143,7 +143,7 @@ void b2bl_print_tuple(b2bl_tuple_t* tuple, int level)
 
 /* Function that inserts a new b2b_logic record - the lock remains taken */
 b2bl_tuple_t* b2bl_insert_new(struct sip_msg* msg, unsigned int hash_index,
-	struct b2b_params *init_params, str* body, str* custom_hdrs, int local_index,
+	struct b2b_params *init_params, str* custom_hdrs, int local_index,
 	str** b2bl_key_s, int db_flag, int repl_flag)
 {
 	b2bl_tuple_t *it, *prev_it;
@@ -244,57 +244,7 @@ b2bl_tuple_t* b2bl_insert_new(struct sip_msg* msg, unsigned int hash_index,
 		tuple->extra_headers->len = custom_hdrs->len;
 	}
 
-	if(use_init_sdp || init_params->flags & B2BL_FLAG_USE_INIT_SDP)
-	{
-		if (init_params->init_body) {
-			tuple->init_sdp.s = shm_malloc(init_params->init_body->len);
-			if (!tuple->init_sdp.s) {
-				LM_ERR("no more shm memory!\n");
-				goto error;
-			}
-			memcpy(tuple->init_sdp.s, init_params->init_body->s,
-				init_params->init_body->len);
-			tuple->init_sdp.len = init_params->init_body->len;
-		}
-
-		if (!body && init_params->init_body)
-		{
-			body = init_params->init_body;
-			/* we also have to add the content type here */
-			tuple->extra_headers = (str *)shm_realloc(tuple->extra_headers,
-					sizeof(str) + extra_headers.len +
-					14/* "Content-Type: " */ + 2/* "\r\n\" */ +
-					init_params->init_body_type->len);
-			if (!tuple->extra_headers)
-			{
-				LM_ERR("cannot add extra headers\n");
-				goto error;
-			}
-			/* restore initial data */
-			tuple->extra_headers->s = (char*)tuple->extra_headers + sizeof(str);
-			tuple->extra_headers->len = extra_headers.len;
-			memcpy(tuple->extra_headers->s + tuple->extra_headers->len,
-					"Content-Type: ", 14);
-			tuple->extra_headers->len += 14;
-			memcpy(tuple->extra_headers->s + tuple->extra_headers->len,
-					init_params->init_body_type->s, init_params->init_body_type->len);
-			tuple->extra_headers->len += init_params->init_body_type->len;
-			memcpy(tuple->extra_headers->s + tuple->extra_headers->len, "\r\n", 2);
-			tuple->extra_headers->len += 2;
-		}
-		if (body) {
-			/* alloc separate memory for sdp */
-			tuple->sdp.s = shm_malloc(body->len);
-			if (!tuple->sdp.s) {
-				LM_ERR("no more shm memory for sdp body\n");
-				goto error;
-			}
-			memcpy(tuple->sdp.s, body->s, body->len);
-			tuple->sdp.len = body->len;
-		}
-	}
-
-	tuple->state = B2B_NOTDEF_STATE;
+	tuple->state = B2B_INIT_BRIDGING_STATE;
 
 	if (repl_flag != TUPLE_REPL_RECV)
 		lock_get(&b2bl_htable[hash_index].lock);
@@ -387,13 +337,9 @@ b2bl_tuple_t* b2bl_insert_new(struct sip_msg* msg, unsigned int hash_index,
 
 	return tuple;
 error:
-	if (tuple) {
-		if (tuple->init_sdp.s)
-			shm_free(tuple->init_sdp.s);
-		if (tuple->sdp.s)
-			shm_free(tuple->sdp.s);
+	if (tuple)
 		shm_free(tuple);
-	}
+
 	if (repl_flag != TUPLE_REPL_RECV)
 		lock_release(&b2bl_htable[hash_index].lock);
 	return 0;
@@ -569,6 +515,11 @@ void b2bl_delete_entity(b2bl_entity_id_t* entity, b2bl_tuple_t* tuple,
 
 	if(entity->dlginfo)
 		shm_free(entity->dlginfo);
+
+	if (entity->in_sdp.s)
+		shm_free(entity->in_sdp.s);
+	if (entity->out_sdp.s)
+		shm_free(entity->out_sdp.s);
 
 	for(i = 0; i< MAX_BRIDGE_ENT; i++)
 		if(tuple->bridge_entities[i] == entity)
@@ -746,12 +697,6 @@ void b2bl_delete(b2bl_tuple_t* tuple, unsigned int hash_index,
 
 	if(tuple->extra_headers)
 		shm_free(tuple->extra_headers);
-
-	if(tuple->b1_sdp.s)
-		shm_free(tuple->b1_sdp.s);
-
-	if (tuple->sdp.s && tuple->sdp.s != tuple->b1_sdp.s)
-		shm_free(tuple->sdp.s);
 
 	while (tuple->vals) {
 		v = tuple->vals;

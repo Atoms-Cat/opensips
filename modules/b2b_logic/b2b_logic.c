@@ -48,8 +48,9 @@
 #include "b2b_load.h"
 #include "b2bl_db.h"
 #include "entity_storage.h"
+#include "bridging.h"
 
-#define TABLE_VERSION 4
+#define TABLE_VERSION 5
 
 /** Functions declarations */
 static int mod_init(void);
@@ -78,8 +79,8 @@ static mi_response_t *mi_b2b_terminate_call(const mi_params_t *params,
 static void b2bl_clean(unsigned int ticks, void* param);
 static void b2bl_db_timer_update(unsigned int ticks, void* param);
 
-int b2b_init_request(struct sip_msg *msg, str *id, struct b2b_params *init_params,
-	void *req_routeid, void *reply_routeid, str *init_body, str *init_body_type);
+int b2bl_script_init_request(struct sip_msg *msg, str *id, struct b2b_params *init_params,
+	void *req_routeid, void *reply_routeid);
 int b2bl_server_new(struct sip_msg *msg, str *id, str *adv_contact,
 	pv_spec_t *hnames, pv_spec_t *hvals);
 int b2bl_client_new(struct sip_msg *msg, str *id, str *dest_uri, str *proxy,
@@ -89,13 +90,15 @@ int b2b_pass_request(struct sip_msg *msg);
 int b2b_delete_entity(struct sip_msg *msg);
 int b2b_end_dlg_leg(struct sip_msg *msg);
 int b2b_send_reply(struct sip_msg *msg, int *code, str *reason, str *headers, str *body);
-int b2b_scenario_bridge(struct sip_msg *msg, str *br_ent1, str *br_ent2,
-	str *provmedia_uri, int *lifetime);
-int  b2b_bridge_request(struct sip_msg* msg, str *key, int *entity_no,
+int  b2bl_script_bridge_msg(struct sip_msg* msg, str *key, int *entity_no,
 	str *adv_contact);
-int b2b_bridge_extern(struct sip_msg* msg, str *id, str * params, 
+int script_trigger_scenario(struct sip_msg* msg, str *id, str * params,
 	str *ent1, pv_spec_t *ent1_hnames, pv_spec_t *ent1_hvals,
 	str *ent2, pv_spec_t *ent2_hnames, pv_spec_t *ent2_hvals);	
+
+str* b2bl_init_extern(struct b2b_params *init_params,
+	b2bl_init_params_t *scen_params, str *e1_id, str *e2_id,
+	b2bl_cback_f cbf, void* cb_param, unsigned int cb_mask);
 
 int pv_get_b2bl_key(struct sip_msg *msg, pv_param_t *param, pv_value_t *res);
 int pv_get_scenario(struct sip_msg *msg, pv_param_t *param, pv_value_t *res);
@@ -136,7 +139,6 @@ static str default_headers[HDR_DEFAULT_LEN]=
    {"Require", 7},
    {"RSeq", 4},
 };
-int use_init_sdp = 0;
 int contact_user = 0;
 unsigned int max_duration = 12*3600;
 
@@ -187,14 +189,12 @@ struct b2b_ctx_val *local_ctx_vals;
 
 static cmd_export_t cmds[]=
 {
-	{"b2b_init_request", (cmd_function)b2b_init_request, {
+	{"b2b_init_request", (cmd_function)b2bl_script_init_request, {
 		{CMD_PARAM_STR, fixup_init_id, 0},
 		{CMD_PARAM_STR|CMD_PARAM_OPT|CMD_PARAM_FIX_NULL,
 			fixup_init_flags, fixup_free_init_flags},
 		{CMD_PARAM_STR|CMD_PARAM_OPT, fixup_route, 0},
-		{CMD_PARAM_STR|CMD_PARAM_OPT, fixup_route ,0},
-		{CMD_PARAM_STR|CMD_PARAM_OPT,0,0},
-		{CMD_PARAM_STR|CMD_PARAM_OPT,0,0}, {0,0,0}},
+		{CMD_PARAM_STR|CMD_PARAM_OPT, fixup_route ,0}, {0,0,0}},
 		REQUEST_ROUTE},
 	{"b2b_server_new", (cmd_function)b2bl_server_new, {
 		{CMD_PARAM_STR,0,0},
@@ -227,14 +227,18 @@ static cmd_export_t cmds[]=
 		{0,0,0}		
 		},
 		REQUEST_ROUTE},
-	{"b2b_bridge", (cmd_function)b2b_scenario_bridge, {
+	{"b2b_bridge", (cmd_function)b2b_script_bridge, {
 		{CMD_PARAM_STR,0,0},
 		{CMD_PARAM_STR,0,0},
 		{CMD_PARAM_STR|CMD_PARAM_OPT,0,0},
 		{CMD_PARAM_STR|CMD_PARAM_OPT|CMD_PARAM_FIX_NULL,
 			fixup_bridge_flags, fixup_free_init_flags}, {0,0,0}},
 		REQUEST_ROUTE},
-	{"b2b_trigger_scenario", (cmd_function)b2b_bridge_extern, {
+	{"b2b_bridge_retry", (cmd_function)b2b_script_bridge_retry, {
+		{CMD_PARAM_STR,0,0},
+		{0,0,0}},
+		REQUEST_ROUTE},
+	{"b2b_trigger_scenario", (cmd_function)script_trigger_scenario, {
 		{CMD_PARAM_STR,fixup_init_id,0},
 		{CMD_PARAM_STR|CMD_PARAM_OPT,
 			0, 0},
@@ -246,7 +250,7 @@ static cmd_export_t cmds[]=
 		{CMD_PARAM_VAR|CMD_PARAM_OPT, fixup_check_avp, 0},
 		{0,0,0}},
 		REQUEST_ROUTE},
-	{"b2b_bridge_request", (cmd_function)b2b_bridge_request, {
+	{"b2b_bridge_request", (cmd_function)b2bl_script_bridge_msg, {
 		{CMD_PARAM_STR,0,0},
 		{CMD_PARAM_INT,0,0},
 		{CMD_PARAM_STR|CMD_PARAM_OPT,0,0}, {0,0,0}},
@@ -265,7 +269,6 @@ static param_export_t params[]=
 	{"script_reply_route",    STR_PARAM,          &script_reply_route        },
 	{"custom_headers",  STR_PARAM,                &custom_headers.s          },
 	{"custom_headers_regexp", STR_PARAM,          &custom_headers_regexp.s   },
-	{"use_init_sdp",    INT_PARAM,                &use_init_sdp              },
 	{"contact_user",    INT_PARAM,                &contact_user              },
 	{"db_url",          STR_PARAM,                &db_url.s                  },
 	{"cachedb_url",     STR_PARAM, 				  &cdb_url.s         		 },
@@ -848,9 +851,6 @@ static int fixup_init_flags(void** param)
 			case 'p':
 				init_params->flags |= B2BL_FLAG_TRANSPARENT_TO;
 				break;
-			case 's':
-				init_params->flags |= B2BL_FLAG_USE_INIT_SDP;
-				break;
 			default:
 				LM_WARN("unknown option `%c'\n", s->s[st]);
 		}
@@ -902,6 +902,12 @@ static int fixup_bridge_flags(void** param)
 				break;
 			case 'f':
 				bridge_params->flags |= B2BL_BR_FLAG_RETURN_AFTER_FAILURE;
+				break;
+			case 'h':
+				bridge_params->flags |= B2BL_BR_FLAG_HOLD;
+				break;
+			case 'r':
+				bridge_params->flags |= B2BL_BR_FLAG_RENEW_SDP;
 				break;
 			default:
 				LM_WARN("unknown option `%c'\n", s->s[st]);
@@ -1119,7 +1125,7 @@ mi_response_t *mi_trigger_scenario(const mi_params_t *params,
 			}
 		}
 
-	if (b2bl_bridge_extern(&init_params, &scen_params, e1_id, e2_id,
+	if (b2bl_init_extern(&init_params, &scen_params, e1_id, e2_id,
 		0, 0, 0) == NULL) {
 		resp = init_mi_error(500, MI_SSTR("Failed to initialize scenario"));
 		goto end;
@@ -1135,7 +1141,7 @@ end:
 	return resp;
 }
 
-int  b2b_bridge_request(struct sip_msg* msg, str *key, int *entity_no,
+int  b2bl_script_bridge_msg(struct sip_msg* msg, str *key, int *entity_no,
 	str *adv_contact)
 {
 	if (cur_route_ctx.flags & (B2BL_RT_REQ_CTX|B2BL_RT_RPL_CTX)) {
@@ -1147,7 +1153,7 @@ int  b2b_bridge_request(struct sip_msg* msg, str *key, int *entity_no,
 	return b2bl_bridge_msg(msg, key, *entity_no, adv_contact);
 }
 
-static int b2bl_bridge_msg_w(struct sip_msg* msg, str* key, int entity_no)
+static int b2bl_api_bridge_msg(struct sip_msg* msg, str* key, int entity_no)
 {
 	return b2bl_bridge_msg(msg, key, entity_no, NULL);
 }
@@ -1191,199 +1197,6 @@ static mi_response_t *mi_b2b_terminate_call(const mi_params_t *params,
 	lock_release(&b2bl_htable[hash_index].lock);
 
 	return init_mi_result_ok();
-}
-
-static mi_response_t *mi_b2b_bridge(const mi_params_t *params,
-							int entity_no, str *prov_media)
-{
-	str key;
-	b2bl_tuple_t* tuple;
-	str new_dest;
-	b2bl_entity_id_t* entity, *old_entity, *bridging_entity, *prov_entity = 0;
-	struct sip_uri uri;
-	str meth_inv = {INVITE, INVITE_LEN};
-	str meth_bye = {BYE, BYE_LEN};
-	unsigned int hash_index, local_index;
-	str ok= str_init("ok");
-	b2b_req_data_t req_data;
-	b2b_rpl_data_t rpl_data;
-	int ret;
-
-	if (get_mi_string_param(params, "dialog_id", &key.s, &key.len) < 0)
-		return init_mi_param_error();
-
-	if (get_mi_string_param(params, "new_uri", &new_dest.s, &new_dest.len) < 0)
-		return init_mi_param_error();
-
-	if(parse_uri(new_dest.s, new_dest.len, &uri)< 0)
-	{
-		LM_ERR("Bad argument. Not a valid uri [%.*s]\n", new_dest.len, new_dest.s);
-		return init_mi_error(404, MI_SSTR("Invalid uri for the new destination"));
-	}
-
-	/* if 'flag' parameter is 1 - >
-	 * means that destination from the current call must be
-	 * bridged to the new destination */
-	if (entity_no != 0 && entity_no != 1)
-		return init_mi_error(404, MI_SSTR("Invalid 'flag' parameter"));
-
-	if (prov_media) {
-		/* parse new uri */
-		if(parse_uri(prov_media->s, prov_media->len, &uri)< 0)
-		{
-			LM_ERR("Bad argument. Not a valid provisional media uri [%.*s]\n",
-				   new_dest.len, new_dest.s);
-			return init_mi_error(404, MI_SSTR("Bad 'prov_media_uri' parameter"));
-		}
-		prov_entity = b2bl_create_new_entity(B2B_CLIENT,
-						0, prov_media, 0, 0, 0, 0, 0, 0, 0);
-		if (!prov_entity) {
-			LM_ERR("Failed to create new b2b entity\n");
-			goto free;
-		}
-	}
-
-	ret = b2bl_get_tuple_key(&key, &hash_index, &local_index);
-	if(ret < 0)
-	{
-		if (ret == -1)
-			LM_ERR("Failed to parse key or find an entity [%.*s]\n",
-					key.len, key.s);
-		else
-			LM_ERR("Could not find entity [%.*s]\n",
-					key.len, key.s);
-		goto free;
-	}
-
-	entity = b2bl_create_new_entity(B2B_CLIENT, 0, &new_dest, 0, 0, 0, 0, 0, 0, 0);
-	if(entity == NULL)
-	{
-		LM_ERR("Failed to create new b2b entity\n");
-		goto free;
-	}
-
-	lock_get(&b2bl_htable[hash_index].lock);
-	b2bl_htable[hash_index].locked_by = process_no;
-
-	tuple = b2bl_search_tuple_safe(hash_index, local_index);
-	if(tuple == NULL)
-	{
-		LM_ERR("No entity found\n");
-		goto error;
-	}
-
-	local_ctx_tuple = tuple;
-
-	if (!tuple->bridge_entities[entity_no] ||
-	tuple->bridge_entities[entity_no]->disconnected)
-	{
-		LM_ERR("Can not bridge requested entity [%p]\n",
-			tuple->bridge_entities[entity_no]);
-		goto error;
-	}
-
-	bridging_entity = tuple->bridge_entities[entity_no];
-	old_entity = tuple->bridge_entities[(entity_no?0:1)];
-
-	if(old_entity == NULL || bridging_entity == NULL)
-	{
-		LM_ERR("Wrong dialog id\n");
-		goto error;
-	}
-
-	if(old_entity->next || old_entity->prev)
-	{
-		LM_ERR("Can not disconnect entity [%p]\n", old_entity);
-		b2bl_print_tuple(tuple, L_ERR);
-		goto error;
-	}
-
-	if(bridging_entity->state != B2BL_ENT_CONFIRMED)
-	{
-		LM_ERR("Wrong state for entity ek= [%.*s], tk=[%.*s]\n",
-			bridging_entity->key.len,bridging_entity->key.s,
-			tuple->key->len, tuple->key->s);
-		goto error;
-	}
-
-	b2bl_print_tuple(tuple, L_DBG);
-
-	/* send BYE to old client */
-	if(old_entity->disconnected)
-	{
-		memset(&rpl_data, 0, sizeof(b2b_rpl_data_t));
-		PREP_RPL_DATA(old_entity);
-		rpl_data.method =METHOD_BYE;
-		rpl_data.code =200;
-		rpl_data.text =&ok;
-		b2b_api.send_reply(&rpl_data);
-	}
-	else
-	{
-		old_entity->disconnected = 1;
-		memset(&req_data, 0, sizeof(b2b_req_data_t));
-		PREP_REQ_DATA(old_entity);
-		req_data.method =&meth_bye;
-		b2b_api.send_request(&req_data);
-	}
-
-	if (0 == b2bl_drop_entity(old_entity, tuple))
-	{
-		LM_ERR("Inconsistent tuple [%p]\n", tuple);
-		b2bl_print_tuple(tuple, L_ERR);
-		goto error;
-	}
-
-	if (old_entity->peer->peer == old_entity)
-		old_entity->peer->peer = NULL;
-	else
-	{
-		LM_ERR("Unexpected chain: old_entity=[%p] and old_entity->peer->peer=[%p]\n",
-			old_entity, old_entity->peer->peer);
-		goto error;
-	}
-	old_entity->peer = NULL;
-
-	tuple->bridge_entities[0]= bridging_entity;
-	if (prov_entity) {
-		tuple->bridge_entities[1]= prov_entity;
-		tuple->bridge_entities[2]= entity;
-		/* we don't have to free it anymore */
-		prov_entity = 0;
-	} else {
-		tuple->bridge_entities[1]= entity;
-		bridging_entity->peer = entity;
-		entity->peer = bridging_entity;
-	}
-
-	tuple->state = B2B_BRIDGING_STATE;
-	bridging_entity->state = 0;
-	bridging_entity->sdp_type = B2BL_SDP_LATE;
-
-	memset(&req_data, 0, sizeof(b2b_req_data_t));
-	PREP_REQ_DATA(bridging_entity);
-	req_data.method =&meth_inv;
-	b2bl_htable[hash_index].locked_by = process_no;
-	b2b_api.send_request(&req_data);
-	b2bl_htable[hash_index].locked_by = -1;
-
-	local_ctx_tuple = NULL;
-
-	b2bl_htable[hash_index].locked_by = -1;;
-	lock_release(&b2bl_htable[hash_index].lock);
-
-	return init_mi_result_ok();
-
-error:
-	if(tuple)
-		b2b_mark_todel(tuple);
-	local_ctx_tuple = NULL;
-	b2bl_htable[hash_index].locked_by = -1;
-	lock_release(&b2bl_htable[hash_index].lock);
-free:
-	if (prov_entity)
-		shm_free(prov_entity);
-	return 0;
 }
 
 static mi_response_t *mi_b2b_bridge_2(const mi_params_t *params,
@@ -2358,10 +2171,10 @@ int b2b_logic_bind(b2bl_api_t* api)
 		LM_ERR("Invalid parameter value\n");
 		return -1;
 	}
-	api->init          = internal_init_scenario;
-	api->bridge        = b2bl_bridge;
+	api->init          = b2bl_api_init;
+	api->bridge        = b2bl_api_bridge;
 	api->bridge_2calls = b2bl_bridge_2calls;
-	api->bridge_msg    = b2bl_bridge_msg_w;
+	api->bridge_msg    = b2bl_api_bridge_msg;
 	api->terminate_call= b2bl_terminate_call;
 	api->get_stats     = b2bl_get_stats;
 	api->register_cb   = b2bl_register_cb;
