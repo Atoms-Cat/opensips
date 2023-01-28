@@ -2194,6 +2194,9 @@ static int handle_msrp_reply(struct msrp_msg *rpl, struct msrp_cell *tran,
 		hentry = hash_entry(msrpua_sessions, sess->session_id);
 		hash_lock(msrpua_sessions, hentry);
 
+		if (!rpl)
+			goto err_failed;
+
 		if (rpl->fl.u.reply.status_no == 401) {
 			if (msrpua_send_auth(sess, trans_param, rpl) < 0) {
 				LM_ERR("Failed to send AUTH request\n");
@@ -2224,8 +2227,14 @@ static int handle_msrp_reply(struct msrp_msg *rpl, struct msrp_cell *tran,
 		}
 	} else {
 		params = (struct msrpua_trans_param *)trans_param;
-		sess = params->sess;
 
+		if (!rpl && !params->timeout) {
+			/* not interested in the transaction timeout */
+			shm_free(params);
+			return 0;
+		}
+
+		sess = params->sess;
 		hentry = hash_entry(msrpua_sessions, sess->session_id);
 		hash_lock(msrpua_sessions, hentry);
 
@@ -2241,8 +2250,8 @@ static int handle_msrp_reply(struct msrp_msg *rpl, struct msrp_cell *tran,
 
 			if (rpl) {
 				status_str.len = rpl->fl.u.reply.status.len +
-					rpl->fl.u.reply.reason.len + 1;
-				status_str.s = pkg_malloc(status_str.len);
+					rpl->fl.u.reply.reason.len;
+				status_str.s = pkg_malloc(status_str.len + 1);
 				if (!status_str.s) {
 					LM_ERR("no more pkg memory\n");
 					pkg_free(sess_id.s);
@@ -2335,6 +2344,7 @@ static int msrpua_send_message(str *sess_id, str *mime, str *body,
 	str from = {0};
 	str hdrs[MSRP_HDRS_MAX_NO] = {{0}};
 	char *p;
+	str msgid;
 	str blen;
 
 	if (!mime || !body) {
@@ -2386,6 +2396,8 @@ static int msrpua_send_message(str *sess_id, str *mime, str *body,
 	p = hdrs[0].s;
 	append_string(p, MESSAGE_ID_PREFIX, MESSAGE_ID_PREFIX_LEN);
 	msrpua_gen_id(p, &sess->session_id, NULL);
+	msgid.s = p;
+	msgid.len = MD5_LEN;
 
 	hdrs_no++;
 
@@ -2430,8 +2442,8 @@ static int msrpua_send_message(str *sess_id, str *mime, str *body,
 	trans_param->sess = sess;
 
 	trans_param->message_id.s = (char *)(trans_param + 1);
-	trans_param->message_id.len = hdrs[0].len;
-	memcpy(trans_param->message_id.s, hdrs[0].s, hdrs[0].len);
+	trans_param->message_id.len = msgid.len;
+	memcpy(trans_param->message_id.s, msgid.s, msgid.len);
 	trans_param->byte_range.s = (char *)(trans_param + 1) +
 		trans_param->message_id.len;
 	trans_param->byte_range.len = hdrs[1].len;
