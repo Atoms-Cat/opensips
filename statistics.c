@@ -67,7 +67,7 @@ static mi_response_t *w_mi_list_stats_1(const mi_params_t *params,
 static mi_response_t *mi_reset_stats(const mi_params_t *params,
 								struct mi_handler *async_hdl);
 
-static mi_export_t mi_stat_cmds[] = {
+static const mi_export_t mi_stat_cmds[] = {
 	{ "get_statistics",
 		"prints the statistics (all, group or one) realtime values.", 0, 0, {
 		{mi_get_stats, {"statistics", 0}},
@@ -571,7 +571,7 @@ error:
 	return -1;
 }
 
-int register_stat2( char *module, char *name, stat_var **pvar,
+int register_stat2(const char *module, char *name, stat_var **pvar,
 					unsigned short flags, void *ctx, int unsafe)
 {
 	str smodule, sname;
@@ -595,7 +595,7 @@ int register_dynamic_stat( str *name, stat_var **pvar)
 	return __register_dynamic_stat (NULL, name, pvar);
 }
 
-int __register_module_stats(char *module, stat_export_t *stats, int unsafe)
+int __register_module_stats(const char *module, const stat_export_t *stats, int unsafe)
 {
 	int ret;
 

@@ -20,7 +20,7 @@ then
 fi
 
 sudo apt-get update -y
-sudo apt-get -y install ${PKGS}
+sudo apt-get -y --allow-downgrades install ${PKGS}
 
 if [ ! -z "${POST_INSTALL_CMD}" ]
 then

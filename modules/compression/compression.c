@@ -155,12 +155,12 @@ static str body_in  = {NULL, 0},
 	   hdr_out  = {NULL, 0},
 	   buf_out  = {NULL, 0};
 
-static param_export_t mod_params[]={
+static const param_export_t mod_params[]={
 	{ "compression_level", INT_PARAM, &mc_level},
 	{0,0,0}
 };
 
-static cmd_export_t cmds[]={
+static const cmd_export_t cmds[]={
 	{"mc_compact",	  (cmd_function)mc_compact, {
 		{CMD_PARAM_STR|CMD_PARAM_OPT|CMD_PARAM_FIX_NULL,
 			fixup_whitelist_compact, fixup_whitelist_free},
@@ -653,7 +653,7 @@ static int mc_compact(struct sip_msg* msg, mc_whitelist_p wh_list, void* flags_p
 		goto error;
 	}
 
-	if (tm_api.t_gett && msg->flags&FL_TM_CB_REGISTERED)
+	if (tm_api.t_gett && msg->msg_flags&FL_TM_CB_REGISTERED)
 		goto error;
 
 	/*register tm callback if tm api */
@@ -661,7 +661,7 @@ static int mc_compact(struct sip_msg* msg, mc_whitelist_p wh_list, void* flags_p
 			tm_api.register_tmcb( msg, 0, TMCB_PRE_SEND_BUFFER,
 				wrap_tm_compact, NULL, 0) != 1) {
 		LM_ERR("failed to add tm TMCB_PRE_SEND_BUFFER callback\n");
-		msg->flags |= FL_TM_CB_REGISTERED;
+		msg->msg_flags |= FL_TM_CB_REGISTERED;
 		goto error;
 	}
 
@@ -1102,7 +1102,7 @@ static int mc_compress(struct sip_msg* msg, int *algo_p, int *flags_p,
 		goto end;
 	}
 
-	if (tm_api.t_gett && msg->flags&FL_TM_CB_REGISTERED) {
+	if (tm_api.t_gett && msg->msg_flags&FL_TM_CB_REGISTERED) {
 		ret = 1;
 		goto end;
 	}
@@ -1112,7 +1112,7 @@ static int mc_compress(struct sip_msg* msg, int *algo_p, int *flags_p,
 			tm_api.register_tmcb( msg, 0, TMCB_PRE_SEND_BUFFER,
 				wrap_tm_compress, NULL, 0) != 1) {
 		LM_ERR("failed to add tm TMCB_PRE_SEND_BUFFER callback\n");
-		msg->flags |= FL_TM_CB_REGISTERED;
+		msg->msg_flags |= FL_TM_CB_REGISTERED;
 		goto end;
 	}
 

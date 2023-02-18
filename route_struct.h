@@ -101,7 +101,10 @@ typedef struct action_elem_ {
 	union {
 		long number;
 		char* string;
-		void* data;
+                union {
+			void* data;
+			const void* data_const;
+		};
 		str s;
 		pv_spec_t* item;
 	} u;
@@ -141,7 +144,7 @@ void free_action_list( struct action *a);
 void print_action(struct action* a);
 void print_expr(struct expr* exp);
 void print_actions(struct action* a);
-int is_mod_func_used(struct action *a, char *name, int param_no);
-int is_mod_async_func_used(struct action *a, char *name, int param_no);
+int is_mod_func_used(struct action *a, const char *name, int param_no);
+int is_mod_async_func_used(struct action *a, const char *name, int param_no);
 
 #endif

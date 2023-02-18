@@ -116,7 +116,7 @@ static int change_reply_status_f(struct sip_msg* msg, int* code, str* reason);
 
 static int mod_init(void);
 
-static cmd_export_t cmds[]={
+static const cmd_export_t cmds[]={
 	{"append_to_reply",  (cmd_function)append_to_reply_f, {
 		{CMD_PARAM_STR, 0, 0}, {0, 0, 0}},
 		REQUEST_ROUTE|FAILURE_ROUTE|BRANCH_ROUTE|ERROR_ROUTE},
@@ -862,14 +862,16 @@ static int has_body_f(struct sip_msg *msg, void *type)
 {
 	struct body_part * p;
 
-	if ( msg->content_length==NULL &&
-	(parse_headers(msg,HDR_CONTENTLENGTH_F, 0)==-1||msg->content_length==NULL))
-		return -1;
+	if ( msg->content_length==NULL ) {
+		if (parse_headers(msg,HDR_CONTENTLENGTH_F, 0)==-1)
+			return -1;
 
-	if (get_content_length (msg)==0) {
-		LM_DBG("content length is zero\n");
-		/* Nothing to see here, please move on. */
-		return -1;
+		if (msg->rcv.proto!=PROTO_UDP && (
+		(msg->content_length==NULL) || get_content_length (msg)==0 ) ) {
+			LM_DBG("no content length hdr or zero len\n");
+			/* Nothing to see here, please move on. */
+			return -1;
+		}
 	}
 
 	if( ( ((int)(long)type )>>16) == TYPE_MULTIPART )
