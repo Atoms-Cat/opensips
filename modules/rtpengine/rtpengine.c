@@ -335,7 +335,6 @@ static int mod_init(void);
 static int mod_preinit(void);
 static int child_init(int);
 static void mod_destroy(void);
-static int mi_child_init(void);
 
 /* Pseudo-Variables */
 static int pv_get_rtpstat_f(struct sip_msg *, pv_param_t *, pv_value_t *);
@@ -412,6 +411,8 @@ static int_str setid_avp;
 static struct tm_binds tmb;
 
 static struct dlg_binds dlgb;
+
+static struct rtp_relay_hooks rtp_relay;
 
 static pv_elem_t *extra_id_pv = NULL;
 
@@ -704,7 +705,7 @@ static const mi_export_t mi_cmds[] = {
 		{mi_show_rtpengines, {0}},
 		{EMPTY_MI_RECIPE}}
 	},
-	{ MI_RELOAD_RTP_ENGINES, 0, 0, mi_child_init, {
+	{ MI_RELOAD_RTP_ENGINES, 0, 0, 0, {
 		{mi_reload_rtpengines, {0}},
 		{mi_reload_rtpengines, {"type", 0}},
 		{EMPTY_MI_RECIPE}}
@@ -1418,7 +1419,8 @@ error:
 static mi_response_t *mi_teardown_call(const mi_params_t *params,
 								struct mi_handler *async_hdl)
 {
-	str callid;
+	str callid, *pcallid = NULL;
+	unsigned int h_entry = 0, h_id = 0;
 
 	if (dlgb.terminate_dlg == NULL)
 		return init_mi_error(500, MI_SSTR("Dialog module not loaded"));
@@ -1428,7 +1430,10 @@ static mi_response_t *mi_teardown_call(const mi_params_t *params,
 	if(callid.s == NULL || callid.len ==0)
 		return init_mi_error(400, MI_SSTR("Empty callid"));
 
-	if (dlgb.terminate_dlg(&callid, 0, 0, _str("MI Termination")) < 0)
+	/* try to "resolve" the callid first through rtp_relay */
+	if (rtp_relay.get_dlg_ids(&callid, &h_entry, &h_id) == 0)
+		pcallid = &callid; /* search for callid, if dialog was not found */
+	if (dlgb.terminate_dlg(pcallid, h_entry, h_id, _str("MI Termination")) < 0)
 		return init_mi_error(500, MI_SSTR("Failed to terminate dialog"));
 
 	return init_mi_result_ok();
@@ -1469,8 +1474,6 @@ void rtpengine_timer(unsigned int ticks, void *param)
 
 /* hack to get the rtpengine node used for the offer */
 static pv_spec_t media_pvar;
-
-static struct rtp_relay_hooks rtp_relay;
 
 static int mod_preinit(void)
 {
@@ -1684,34 +1687,6 @@ mod_init(void)
 	return 0;
 }
 
-static int mi_child_init(void)
-{
-	if(child_init(myrank) < 0)
-	{
-		LM_ERR("Failed to initial rtpp socks\n");
-		return -1;
-	}
-
-	if(!db_url.s)
-		return 0;
-
-	if (db_functions.init==0)
-	{
-		LM_CRIT("database not bound\n");
-		return -1;
-	}
-
-	db_connection = db_functions.init(&db_url);
-	if(db_connection == NULL) {
-		LM_ERR("Failed to connect to database\n");
-		return -1;
-	}
-
-	LM_DBG("Database connection opened successfully\n");
-
-	return 0;
-}
-
 static inline int rtpengine_connect_node(struct rtpe_node *pnode)
 {
 	int n;
@@ -1824,8 +1799,7 @@ static int connect_rtpengines(int force_test)
 	return 0;
 }
 
-static int
-child_init(int rank)
+static int child_init(int rank)
 {
 	mypid = getpid();
 	myrand = rand()%10000;
@@ -1835,8 +1809,20 @@ child_init(int rank)
 	if (rank == PROC_MODULE)
 		myrank = 0;
 
-	if(*rtpe_set_list==NULL )
-		return 0;
+	if (db_url.s) {
+		if (!db_functions.init) {
+			LM_CRIT("database not bound\n");
+			return -1;
+		}
+
+		db_connection = db_functions.init(&db_url);
+		if (!db_connection) {
+			LM_ERR("Failed to connect to database\n");
+			return -1;
+		}
+
+		LM_DBG("Database connection opened successfully\n");
+	}
 
 	/* Iterate known RTP proxies - create sockets */
 	return connect_rtpengines(1);
@@ -2458,7 +2444,7 @@ static bencode_item_t *rtpe_function_call(bencode_buffer_t *bencbuf, struct sip_
 	struct ng_flags_parse ng_flags;
 	bencode_item_t *item, *resp;
 	str viabranch, error;
-	int ret, flags_exist = 0;
+	int ret, flags_exist = 0, callid_exist = 0, from_tag_exist = 0, to_tag_exist = 0;
 	struct rtpe_node *node;
 	char *cp, *err = NULL;
 	pv_value_t val;
@@ -2485,6 +2471,12 @@ static bencode_item_t *rtpe_function_call(bencode_buffer_t *bencbuf, struct sip_
 		bencode_dictionary_get_str(ng_flags.dict, "call-id", &ng_flags.call_id);
 		bencode_dictionary_get_str(ng_flags.dict, "from-tag", &ng_flags.from_tag);
 		bencode_dictionary_get_str(ng_flags.dict, "to-tag", &ng_flags.to_tag);
+		if (ng_flags.call_id.len)
+			callid_exist = 1;
+		if (ng_flags.from_tag.len)
+			from_tag_exist = 1;
+		if (ng_flags.to_tag.len)
+			to_tag_exist = 1;
 	}
 	if (op == OP_OFFER || op == OP_ANSWER) {
 		if (!flags_exist)
@@ -2547,7 +2539,7 @@ static bencode_item_t *rtpe_function_call(bencode_buffer_t *bencbuf, struct sip_
 	if (ng_flags.rtcp_mux && ng_flags.rtcp_mux->child)
 		bencode_dictionary_add(ng_flags.dict, "rtcp-mux", ng_flags.rtcp_mux);
 
-	if (!extra_dict)
+	if (!callid_exist)
 		bencode_dictionary_add_str(ng_flags.dict, "call-id", &ng_flags.call_id);
 
 	if (ng_flags.via) {
@@ -2600,18 +2592,18 @@ static bencode_item_t *rtpe_function_call(bencode_buffer_t *bencbuf, struct sip_
 			op == OP_BLOCK_MEDIA || op == OP_UNBLOCK_MEDIA ||
 			op == OP_BLOCK_DTMF || op == OP_UNBLOCK_DTMF ||
 			op == OP_START_FORWARD || op == OP_STOP_FORWARD) {
-		if (ng_flags.directional && !extra_dict)
+		if (ng_flags.directional && !from_tag_exist)
 			bencode_dictionary_add_str(ng_flags.dict, "from-tag", &ng_flags.from_tag);
 	} else if (ng_flags.directional
 		|| (msg && ((msg->first_line.type == SIP_REQUEST && op != OP_ANSWER)
 		|| (msg->first_line.type == SIP_REPLY && op == OP_DELETE)
 		|| (msg->first_line.type == SIP_REPLY && op == OP_ANSWER))))
 	{
-		if (!extra_dict)
+		if (!from_tag_exist)
 			bencode_dictionary_add_str(ng_flags.dict, "from-tag", &ng_flags.from_tag);
 		if (op != OP_START_MEDIA && op != OP_STOP_MEDIA) {
 			/* no need of to-tag if we are just playing media */
-			if (ng_flags.to && ng_flags.to_tag.s && ng_flags.to_tag.len)
+			if (ng_flags.to && ng_flags.to_tag.s && ng_flags.to_tag.len && !to_tag_exist && !extra_dict)
 				bencode_dictionary_add_str(ng_flags.dict, "to-tag", &ng_flags.to_tag);
 		}
 	}
@@ -2620,10 +2612,10 @@ static bencode_item_t *rtpe_function_call(bencode_buffer_t *bencbuf, struct sip_
 			err = "No to-tag present";
 			goto error;
 		}
-		if (!extra_dict) {
+		if (!from_tag_exist)
 			bencode_dictionary_add_str(ng_flags.dict, "from-tag", &ng_flags.to_tag);
+		if (!to_tag_exist && !extra_dict)
 			bencode_dictionary_add_str(ng_flags.dict, "to-tag", &ng_flags.from_tag);
-		}
 	}
 
 	bencode_dictionary_add_string(ng_flags.dict, "command", command_strings[op]);

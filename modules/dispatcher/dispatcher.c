@@ -62,7 +62,8 @@
 /** parameters */
 static str pvar_algo_param = str_init("");
 str hash_pvar_param = {NULL, 0};
-str algo_route_param = {NULL, 0};
+static str algo_route_param = {NULL, 0};
+struct script_route_ref *algo_route = NULL;
 
 pv_elem_t * hash_param_model = NULL;
 
@@ -348,7 +349,9 @@ static const mi_export_t mi_cmds[] = {
 	},
 	{ "ds_reload", 0, 0, mi_child_init, {
 		{ds_mi_reload, {0}},
+		{ds_mi_reload, {"inherit_state", 0}},
 		{ds_mi_reload_1, {"partition", 0}},
+		{ds_mi_reload_1, {"partition", "inherit_state", 0}},
 		{EMPTY_MI_RECIPE}}
 	},
 	{ "ds_push_script_attrs", 0, 0, 0, {
@@ -867,8 +870,13 @@ static int mod_init(void)
 	pvar_algo_param.len = strlen(pvar_algo_param.s);
 	if (pvar_algo_param.len)
 		ds_pvar_parse_pattern(pvar_algo_param);
-	if (algo_route_param.s)
-		algo_route_param.len = strlen(algo_route_param.s);
+	if (algo_route_param.s) {
+		algo_route = ref_script_route_by_name( algo_route_param.s,
+			sroutes->request, RT_NO, REQUEST_ROUTE, 0);
+		if (!ref_script_route_is_valid(algo_route))
+			LM_WARN("algorithm route <%s> not found, ignoring this for now\n",
+				algo_route_param.s);
+	}
 
 	if (init_ds_bls()!=0) {
 		LM_ERR("failed to init DS blacklists\n");
@@ -908,7 +916,7 @@ static int mod_init(void)
 		}
 
 		/* do the actual data load */
-		if (ds_reload_db(partition, 1)!=0) {
+		if (ds_reload_db(partition, 1, 1)!=0) {
 			LM_ERR("failed to load data from DB\n");
 			return -1;
 		}
@@ -1371,9 +1379,12 @@ mi_response_t *ds_mi_reload(const mi_params_t *params,
 								struct mi_handler *async_hdl)
 {
 	ds_partition_t *part_it;
+	int is_inherit_state = get_mi_bool_like_param(params, "inherit_state", 1);
+
+	LM_DBG("is_inherit_state is: %d \n", is_inherit_state);
 
 	for (part_it = partitions; part_it; part_it = part_it->next)
-		if (ds_reload_db(part_it, 0)<0)
+		if (ds_reload_db(part_it, 0, is_inherit_state)<0)
 			return init_mi_error(500, MI_SSTR(MI_ERR_RELOAD));
 
 	if (ds_cluster_id && ds_cluster_sync() < 0)
@@ -1387,15 +1398,18 @@ mi_response_t *ds_mi_reload_1(const mi_params_t *params,
 {
 	ds_partition_t *partition;
 	str partname;
+	int is_inherit_state = get_mi_bool_like_param(params, "inherit_state", 1);
 
 	if (get_mi_string_param(params, "partition", &partname.s, &partname.len) < 0)
-		return init_mi_param_error();
+        return init_mi_param_error();
+
+	LM_DBG("is_inherit_state is: %d \n", is_inherit_state);
 
 	partition = find_partition_by_name(&partname);
 
 	if (partition == NULL)
 		return init_mi_error(500, MI_SSTR(MI_UNK_PARTITION));
-	if (ds_reload_db(partition, 0) < 0)
+	if (ds_reload_db(partition, 0, is_inherit_state) < 0)
 		return init_mi_error(500, MI_SSTR(MI_ERR_RELOAD));
 	
 	if (ds_cluster_id && ds_cluster_sync() < 0)

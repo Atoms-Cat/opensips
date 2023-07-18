@@ -113,8 +113,8 @@ typedef struct b2bl_tuple
 	str* key;
 	str *scenario_id;
 	enum b2b_tuple_state state;
-	int req_routeid;
-	int reply_routeid;
+	struct script_route_ref *req_route;
+	struct script_route_ref *reply_route;
 	b2bl_entity_id_t* servers[MAX_B2BL_ENT];
 	b2bl_entity_id_t* clients[MAX_B2BL_ENT];
 	b2bl_entity_id_t* bridge_entities[MAX_BRIDGE_ENT];
@@ -235,5 +235,8 @@ int b2bl_register_new_tuple_cb(b2bl_cback_f f, void *param);
 int b2bl_run_new_tuple_cb(str *key);
 
 b2bl_tuple_t *b2bl_get_tuple(str *key);
+
+int get_new_entities(struct b2bl_new_entity **entity1,
+	struct b2bl_new_entity **entity2);
 
 #endif

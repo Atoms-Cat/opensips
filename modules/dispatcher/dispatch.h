@@ -60,7 +60,6 @@
 
 #define MI_FULL_LISTING (1<<0)
 
-
 extern int ds_persistent_state;
 
 typedef struct _ds_dest
@@ -187,7 +186,7 @@ extern str ds_dest_probe_mode_col;
 
 extern pv_elem_t * hash_param_model;
 extern str hash_pvar_param;
-extern str algo_route_param;
+extern struct script_route_ref *algo_route;
 
 extern str ds_setid_pvname;
 extern pv_spec_t ds_setid_pv;
@@ -211,7 +210,7 @@ extern void *ds_srg;
 int init_ds_db(ds_partition_t *partition);
 int ds_connect_db(ds_partition_t *partition);
 void ds_disconnect_db(ds_partition_t *partition);
-int ds_reload_db(ds_partition_t *partition, int initial);
+int ds_reload_db(ds_partition_t *partition, int initial, int is_inherit_state);
 
 int init_ds_data(ds_partition_t *partition);
 void ds_destroy_data(ds_partition_t *partition);

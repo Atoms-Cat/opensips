@@ -445,7 +445,7 @@ inline static int hexstr2int(char *c, int len, unsigned int *val)
 
 /* double output length assumed ; does NOT zero-terminate */
 inline static int string2hex(
-	/* input */ unsigned char *str, int len,
+	/* input */ const char *str, int len,
 	/* output */ char *hex )
 {
 	int orig_len;
@@ -1563,5 +1563,10 @@ int _base32decode(unsigned char *out, unsigned char *in, int len,
 
 #define calc_word32_encode_len calc_base32_encode_len
 #define calc_max_word32_decode_len calc_max_base32_decode_len
+
+#ifdef howmany
+#undef howmany
+#endif
+#define howmany(x, y) (sizeof(x) / sizeof(y))
 
 #endif

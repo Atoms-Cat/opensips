@@ -94,6 +94,8 @@ void cleanup(int show_status)
 			shm_status();
 	}
 
+	cleanup_log_cons_shm_table();
+
 	/* zero all shmem alloc vars that we still use */
 	shm_mem_destroy();
 	if (pid_file) unlink(pid_file);
@@ -170,6 +172,8 @@ void shutdown_opensips( int status )
 
 	sr_set_core_status_terminating();
 
+	distroy_log_event_cons();
+
 	/* terminate all processes */
 
 	/* first we try to terminate the processes via the IPC channel */
@@ -237,6 +241,6 @@ void shutdown_opensips( int status )
 	alarm(0);
 	signal(SIGALRM, SIG_IGN);
 
-	dprint("Thank you for running " NAME "\n");
+	stderr_dprint_tmp("Thank you for running " NAME "\n");
 	exit( status );
 }

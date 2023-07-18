@@ -89,14 +89,16 @@ dialog Module
 
               1.7.9. load_dialog_ctx( dialog [, id_type])
               1.7.10. unload_dialog_ctx()
-              1.7.11. set_dlg_profile(profile,[value])
-              1.7.12. unset_dlg_profile(profile,[value])
+              1.7.11. set_dlg_profile(profile, [value],
+                      [clear_values])
+
+              1.7.12. unset_dlg_profile(profile, [value])
               1.7.13. is_in_profile(profile,[value])
               1.7.14. get_profile_size(profile,[value],size)
-              1.7.15. set_dlg_flag(idx)
-              1.7.16. test_and_set_dlg_flag(idx, value)
-              1.7.17. reset_dlg_flag(idx)
-              1.7.18. is_dlg_flag_set(idx)
+              1.7.15. set_dlg_flag(flag)
+              1.7.16. test_and_set_dlg_flag(flag, value)
+              1.7.17. reset_dlg_flag(flag)
+              1.7.18. is_dlg_flag_set(flag)
               1.7.19. store_dlg_value(name,val)
               1.7.20. fetch_dlg_value(name,val)
               1.7.21. set_dlg_sharing_tag(tag_name)
@@ -146,9 +148,10 @@ dialog Module
               1.10.6. $DLG_did
               1.10.7. $DLG_end_reason
               1.10.8. $DLG_timeout
-              1.10.9. $DLG_json
-              1.10.10. $DLG_ctx_json
-              1.10.11. $dlg_val(name)
+              1.10.9. $DLG_del_delay
+              1.10.10. $DLG_json
+              1.10.11. $DLG_ctx_json
+              1.10.12. $dlg_val(name)
 
         1.11. Exported Events
 
@@ -536,6 +539,9 @@ modparam("dialog", "dlg_match_mode", 0)
    it will still be able to match and route late in-dialog
    requests.
 
+   This global value may be per-call changed via the DLG_del_delay
+   “$DLG_del_delay” ($DLG_del_delay) script variable.
+
    Default value is “0” (disabled).
 
    Example 1.8. Set delete_delay parameter
@@ -903,9 +909,9 @@ modparam("dialog", "flags_column", "flags_c_name")
 
 1.6.37. profiles_with_value (string)
 
-   List of names for profiles with values. Flags /b or /s allow
-   sharing profiles between OpenSIPS instances using the clusterer
-   module or a CacheDB backend, respectively.
+   List of names (alphanumerical) for profiles with values. Flags
+   /b or /s allow sharing profiles between OpenSIPS instances
+   using the clusterer module or a CacheDB backend, respectively.
 
    Default value is “empty”.
 
@@ -917,9 +923,10 @@ annels/s; codecUsed/b;")
 
 1.6.38. profiles_no_value (string)
 
-   List of names for profiles without values. Flags /b or /s allow
-   sharing profiles between OpenSIPS instances using the clusterer
-   module or a CacheDB backend, respectively.
+   List of names (alphanumerical) for profiles without values.
+   Flags /b or /s allow sharing profiles between OpenSIPS
+   instances using the clusterer module or a CacheDB backend,
+   respectively.
 
    Default value is “empty”.
 
@@ -1293,7 +1300,7 @@ create_dialog("B");
        pushing values from all matched dialogs.
      * key (string) - name of a dialog variable to be used a
        search key (when looking after the target dialog)
-     * key_val (string) - the value of the dialog variable that is
+     * key_val (var) - the value of the dialog variable that is
        used as key in searching the target dialog.
      * no_dlgs (var) - the total number of dialogs containing the
        key variable
@@ -1374,7 +1381,7 @@ als)[$var(i)])'\n");
    Meaning of the parameters is as follows:
      * name (string) - the name of the dialog variable used for
        the lookup
-     * value (string) - the value of the above dialog val
+     * value (var) - the value of the above dialog val
      * out_avp (var) - the AVP which will be populated will the
        dialog JSONs for all the matched calls
      * dlg_no (var) - the out var which will contain the total
@@ -1462,7 +1469,7 @@ if ( get_dialogs_by_profile("caller",$fU,$avp(dlg_jsons),$avp(dlg_no)) )
 if (load_dialog_ctx("$var(callid)")) {
         xlog("The dialog '$var(callid)' already has a duration "
              "of $DLG_lifetime seconds\n");
-        if (is_in_profile("inbound_call"))
+        if (is_in_profile("inboundCall"))
                 xlog("this dialog is an inbound call\n");
         unload_dialog_ctx();
 }
@@ -1482,7 +1489,7 @@ if (load_dialog_ctx("$var(callid)")) {
 
    For usage example, see the load_dialog_ctx()
 
-1.7.11.  set_dlg_profile(profile,[value])
+1.7.11.  set_dlg_profile(profile, [value], [clear_values])
 
    Inserts the current dialog into a profile. Note that if the
    profile does not support values, this will be silently
@@ -1497,17 +1504,25 @@ if (load_dialog_ctx("$var(callid)")) {
      * value (string, optional) - string value to define the
        belonging of the dialog to the profile - note that the
        profile must support values.
+     * clear_values (boolean, optional) - if set to true (1), all
+       values of the profile will be cleared before setting the
+       given value. Default: false.
 
    This function can be used from REQUEST_ROUTE, BRANCH_ROUTE,
    REPLY_ROUTE and FAILURE_ROUTE.
 
    Example 1.63. set_dlg_profile usage
 ...
-set_dlg_profile("inbound_call");
-set_dlg_profile("caller",$fu);
+set_dlg_profile("inboundCall");
+
+# Set a new value (all other values are kept intact)
+set_dlg_profile("caller", $fu);
+
+# Set a new value while removing all previous values
+set_dlg_profile("caller", $fu, true);
 ...
 
-1.7.12.  unset_dlg_profile(profile,[value])
+1.7.12.  unset_dlg_profile(profile, [value])
 
    Removes the current dialog from a profile.
 
@@ -1519,14 +1534,20 @@ set_dlg_profile("caller",$fu);
      * value (string, optional) - string value to define the
        belonging of the dialog to the profile - note that the
        profile must support values.
+       NEW in 3.4: for profiles with value, by omitting this
+       parameter you can now clear all values of the given
+       profile.
 
    This function can be used from REQUEST_ROUTE, BRANCH_ROUTE,
    REPLY_ROUTE and FAILURE_ROUTE.
 
    Example 1.64. unset_dlg_profile usage
 ...
-unset_dlg_profile("inbound_call");
-unset_dlg_profile("caller",$fu);
+unset_dlg_profile("inboundCall");
+unset_dlg_profile("caller", $fu);
+...
+# Remove all values in a profile
+unset_dlg_profile("caller");
 ...
 
 1.7.13.  is_in_profile(profile,[value])
@@ -1553,7 +1574,7 @@ unset_dlg_profile("caller",$fu);
 
    Example 1.65. is_in_profile usage
 ...
-if (is_in_profile("inbound_call")) {
+if (is_in_profile("inboundCall")) {
         log("this request belongs to a inbound call\n");
 }
 ...
@@ -1593,14 +1614,14 @@ get_profile_size("caller", $fu, $var(size));
 xlog("currently, the user $fu has $var(size) active outgoing calls\n");
 ...
 
-1.7.15.  set_dlg_flag(idx)
+1.7.15.  set_dlg_flag(flag)
 
-   Sets the dialog flag index idx to true. The dialog flags are
+   Sets the dialog flag named flag to true. The dialog flags are
    dialog persistent and they can be accessed (set and test) for
    all requests belonging to the dialog.
 
    Parameters:
-     * idx (int) - The flag index can be between 0 and 31.
+     * flag (string, static) - The flag name.
 
    NOTE: the dialog must be created before using this function
    (use create_dialog() function before).
@@ -1610,15 +1631,15 @@ xlog("currently, the user $fu has $var(size) active outgoing calls\n");
 
    Example 1.67. set_dlg_flag usage
 ...
-set_dlg_flag(3);
+set_dlg_flag("MY_DLG_FLAG");
 ...
 
-1.7.16.  test_and_set_dlg_flag(idx, value)
+1.7.16.  test_and_set_dlg_flag(flag, value)
 
-   Atomically checks if the dialog flag index idx is equal to
+   Atomically checks if the dialog flag named flag is equal to
    value. If true, changes the value with the opposite one. This
    operation is done under the dialog lock.
-     * idx (int) - The flag index can be between 0 and 31.
+     * flag (string, static) - The flag name.
      * value (int) - The value should be 0 (false) or 1 (true).
 
    NOTE: the dialog must be created before using this function
@@ -1629,17 +1650,17 @@ set_dlg_flag(3);
 
    Example 1.68. test_and_set_dlg_flag usage
 ...
-test_and_set_dlg_flag(3, 0);
+test_and_set_dlg_flag("MY_DLG_FLAG", 0);
 ...
 
-1.7.17.  reset_dlg_flag(idx)
+1.7.17.  reset_dlg_flag(flag)
 
-   Resets the dialog flag index idx to false. The dialog flags are
-   dialog persistent and they can be accessed (set and test) for
-   all requests belonging to the dialog.
+   Resets the dialog flag named flag to false. The dialog flags
+   are dialog persistent and they can be accessed (set and test)
+   for all requests belonging to the dialog.
 
    Parameters:
-     * idx (int) - The flag index can be between 0 and 31.
+     * flag (string, static) - The flag name.
 
    NOTE: the dialog must be created before using this function
    (use create_dialog() function before).
@@ -1649,17 +1670,17 @@ test_and_set_dlg_flag(3, 0);
 
    Example 1.69. reset_dlg_flag usage
 ...
-reset_dlg_flag(16);
+reset_dlg_flag("MY_DLG_FLAG");
 ...
 
-1.7.18.  is_dlg_flag_set(idx)
+1.7.18.  is_dlg_flag_set(flag)
 
-   Returns true if the dialog flag index idx is set. The dialog
+   Returns true if the dialog flag named flag is set. The dialog
    flags are dialog persistent and they can be accessed (set and
    test) for all requests belonging to the dialog.
 
    Parameters:
-     * idx (int) - The flag index can be between 0 and 31.
+     * flag (string, static) - The flag name.
 
    NOTE: the dialog must be created before using this function
    (use create_dialog() function before).
@@ -1669,21 +1690,21 @@ reset_dlg_flag(16);
 
    Example 1.70. is_dlg_flag_set usage
 ...
-if (is_dlg_flag_set(16)) {
-        xlog("dialog flag 16 is set\n");
+if (is_dlg_flag_set("MY_DLG_FLAG")) {
+        xlog("dialog flag MY_DLG_FLAG is set\n");
 }
 ...
 
 1.7.19.  store_dlg_value(name,val)
 
-   Attaches to the dialog the value val under the name name. The
-   values attached to dialogs are dialog persistent and they can
-   be accessed (read and write) for all requests belonging to the
-   dialog.
+   Attaches to the dialog the value from the variable val under
+   the name name. The values attached to dialogs are dialog
+   persistent and they can be accessed (read and write) for all
+   requests belonging to the dialog.
 
    Parameters:
      * name (string)
-     * val (string)
+     * val (var)
 
    NOTE: the dialog must be created before using this function
    (use create_dialog() function before).
@@ -1697,7 +1718,7 @@ if (is_dlg_flag_set(16)) {
    Example 1.71. store_dlg_value usage
 ...
 store_dlg_value("inv_src_ip",$si);
-store_dlg_value("account type","prepaid");
+store_dlg_value("account type",$var(account));
 # or
 $dlg_val(account_type) = "prepaid";
 ...
@@ -2041,7 +2062,7 @@ GIwZjAzNGM1ZDY
      * value (optional)- string value to toughen the check;
 
    MI FIFO Command Format:
-                opensips-cli -x mi profile_get_size inbound_calls
+                opensips-cli -x mi profile_get_size inboundCalls
 
 1.9.5. profile_list_dlgs
 
@@ -2062,7 +2083,7 @@ GIwZjAzNGM1ZDY
      * value (optional)- string value to toughen the check;
 
    MI FIFO Command Format:
-                opensips-cli -x mi profile_list_dlgs inbound_calls
+                opensips-cli -x mi profile_list_dlgs inboundCalls
 
 1.9.6. profile_get_values
 
@@ -2077,7 +2098,7 @@ GIwZjAzNGM1ZDY
      * profile - name of the profile to list the dialog for.
 
    MI FIFO Command Format:
-                opensips-cli -x mi profile_get_values inbound_calls
+                opensips-cli -x mi profile_get_values inboundCalls
 
 1.9.7. profile_end_dlgs
 
@@ -2094,7 +2115,7 @@ GIwZjAzNGM1ZDY
        only the dialogs with the specified value
 
    MI FIFO Command Format:
-                opensips-cli -x mi profile_end_dlgs inbound_calls
+                opensips-cli -x mi profile_end_dlgs inboundCalls
 
 1.9.8. dlg_db_sync
 
@@ -2286,10 +2307,10 @@ GIwZjAzNGM1ZDY
 
 1.10.4. $DLG_flags
 
-   Returns the dialog flags array (as a single integer value) of
-   the dialog corresponding to the processed sequential request.
-   This PV will be available only for sequential requests, after
-   doing loose_route().
+   Returns the dialog flags (as a list of flag names separted by
+   space) of the dialog corresponding to the processed sequential
+   request. This PV will be available only for sequential
+   requests, after doing loose_route().
 
    NULL will be returned if there is no dialog for the request.
 
@@ -2346,7 +2367,18 @@ GIwZjAzNGM1ZDY
    NULL will be returned if there is no dialog for the request,
    otherwise the number of seconds until the dialog expiration.
 
-1.10.9. $DLG_json
+1.10.9. $DLG_del_delay
+
+   Used to set the dialog deletion delay (in seconds) for the
+   current dialog (in a per-call manner). When read, the variable
+   returns the number of seconds that were set for the call or the
+   default value ( see the “delete_delay” - delete_delay) module
+   param) for the delete delaying.
+
+   The variable must be used when the context of a dialog is
+   available in script.
+
+1.10.10. $DLG_json
 
    The variable is read-only and exposes a JSON variable
    containing all the information that the dlg_list MI function
@@ -2355,7 +2387,7 @@ GIwZjAzNGM1ZDY
    NULL will be returned if there is no dialog for the request,
    otherwise the JSON will be returned.
 
-1.10.10. $DLG_ctx_json
+1.10.11. $DLG_ctx_json
 
    The variable is read-only and exposes a JSON variable
    containing all the information that the dlg_list_ctx MI
@@ -2366,11 +2398,12 @@ GIwZjAzNGM1ZDY
    NULL will be returned if there is no dialog for the request,
    otherwise the JSON will be returned.
 
-1.10.11. $dlg_val(name)
+1.10.12. $dlg_val(name)
 
    This is a read/write variable that allows access to the dialog
-   attribute named name. This PV will be available only for
-   sequential requests, after doing loose_route().
+   attribute named name. It can hold a string or integer value.
+   This PV will be available only for sequential requests, after
+   doing loose_route().
 
    NULL will be returned if there is no dialog for the request.
 
@@ -2514,12 +2547,12 @@ Chapter 4. Contributors
    Table 4.1. Top contributors by DevScore^(1), authored
    commits^(2) and lines added/removed^(3)
      Name DevScore Commits Lines ++ Lines --
-   1. Bogdan-Andrei Iancu (@bogdan-iancu) 443 279 13098 3468
-   2. Razvan Crainea (@razvancrainea) 264 198 4978 1499
+   1. Bogdan-Andrei Iancu (@bogdan-iancu) 452 285 13276 3527
+   2. Razvan Crainea (@razvancrainea) 266 200 4991 1499
    3. Vlad Paiu (@vladpaiu) 253 144 7205 3026
-   4. Vlad Patrascu (@rvlad-patrascu) 186 100 3833 3271
-   5. Liviu Chircu (@liviuchircu) 169 124 2920 1255
-   6. Ovidiu Sas (@ovidiusas) 32 25 494 120
+   4. Vlad Patrascu (@rvlad-patrascu) 198 104 4330 3514
+   5. Liviu Chircu (@liviuchircu) 175 126 3111 1362
+   6. Ovidiu Sas (@ovidiusas) 34 26 601 161
    7. Dan Pascu (@danpascu) 30 25 233 179
    8. Eseanu Marius Cristian (@eseanucristian) 18 6 722 341
    9. Daniel-Constantin Mierla (@miconda) 16 13 76 66
@@ -2528,16 +2561,16 @@ Chapter 4. Contributors
    All remaining contributors: Anca Vamanu, Walter Doekes
    (@wdoekes), Ionut Ionita (@ionutrazvanionita), Ionel Cerghit
    (@ionel-cerghit), Andrei Dragus, Maksym Sobolyev (@sobomax),
-   John Riordan, Hugues Mitonneau, Carsten Bock, Jerome Martin,
-   Klaus Darilion, Jarrod Baumann (@jarrodb), Nick Altmann
-   (@nikbyte), Zero King (@l2dy), Michel Bensoussan, Richard
-   Revels, Elena-Ramona Modroiu, Tavis Paquette, Andrei Datcu
-   (@andrei-datcu), Jeffrey Magder, Ron Winacott, Andy Pyles,
-   Julián Moreno Patiño, Konstantin Bokarius, sergei lavrov, Alex
-   Massover, Damien Sandras (@dsandras), Alex Hermann, Dusan
-   Klinec (@ph4r05), Norman Brandinger (@NormB), Peter Lemenkov
-   (@lemenkov), UnixDev, Eliot Gable, Ryan Bullock (@rrb3942),
-   Edson Gellert Schubert.
+   John Riordan, Hugues Mitonneau, Carsten Bock, Peter Lemenkov
+   (@lemenkov), Jerome Martin, Klaus Darilion, Jarrod Baumann
+   (@jarrodb), Nick Altmann (@nikbyte), Zero King (@l2dy), Michel
+   Bensoussan, Richard Revels, Elena-Ramona Modroiu, Tavis
+   Paquette, Ryan Bullock, Andrei Datcu (@andrei-datcu), Jeffrey
+   Magder, Ron Winacott, Andy Pyles, Julián Moreno Patiño,
+   Konstantin Bokarius, sergei lavrov, Alex Massover, Damien
+   Sandras (@dsandras), Alex Hermann, Dusan Klinec (@ph4r05),
+   Norman Brandinger (@NormB), UnixDev, Eliot Gable, Ryan Bullock
+   (@rrb3942), Edson Gellert Schubert.
 
    (1) DevScore = author_commits + author_lines_added /
    (project_lines_added / project_commits) + author_lines_deleted
@@ -2559,19 +2592,19 @@ Chapter 4. Contributors
 
    Table 4.2. Most recently active contributors^(1) to this module
                       Name                   Commit Activity
-   1.  Vlad Patrascu (@rvlad-patrascu)     Jul 2016 - Feb 2023
-   2.  Razvan Crainea (@razvancrainea)     Aug 2010 - Jan 2023
-   3.  Liviu Chircu (@liviuchircu)         Aug 2012 - Jan 2023
-   4.  Bogdan-Andrei Iancu (@bogdan-iancu) Apr 2006 - Nov 2022
-   5.  Vlad Paiu (@vladpaiu)               Oct 2010 - Nov 2021
-   6.  Ovidiu Sas (@ovidiusas)             Feb 2008 - Sep 2021
-   7.  Nick Altmann (@nikbyte)             Oct 2013 - May 2021
-   8.  Walter Doekes (@wdoekes)            Apr 2010 - Apr 2021
-   9.  Maksym Sobolyev (@sobomax)          Nov 2020 - Jan 2021
-   10. sergei lavrov                       Dec 2020 - Dec 2020
+   1.  Razvan Crainea (@razvancrainea)     Aug 2010 - Jul 2023
+   2.  Vlad Patrascu (@rvlad-patrascu)     Jul 2016 - Jun 2023
+   3.  Bogdan-Andrei Iancu (@bogdan-iancu) Apr 2006 - Jun 2023
+   4.  Liviu Chircu (@liviuchircu)         Aug 2012 - Jun 2023
+   5.  Ovidiu Sas (@ovidiusas)             Feb 2008 - Jun 2023
+   6.  Ryan Bullock                        May 2023 - May 2023
+   7.  Maksym Sobolyev (@sobomax)          Nov 2020 - Feb 2023
+   8.  Peter Lemenkov (@lemenkov)          Jun 2018 - Sep 2022
+   9.  Vlad Paiu (@vladpaiu)               Oct 2010 - Nov 2021
+   10. Nick Altmann (@nikbyte)             Oct 2013 - May 2021
 
-   All remaining contributors: Zero King (@l2dy), Dan Pascu
-   (@danpascu), Peter Lemenkov (@lemenkov), Ionel Cerghit
+   All remaining contributors: Walter Doekes (@wdoekes), sergei
+   lavrov, Zero King (@l2dy), Dan Pascu (@danpascu), Ionel Cerghit
    (@ionel-cerghit), Jarrod Baumann (@jarrodb), Ionut Ionita
    (@ionutrazvanionita), Julián Moreno Patiño, Dusan Klinec
    (@ph4r05), Eseanu Marius Cristian (@eseanucristian), Andrei
@@ -2591,18 +2624,18 @@ Chapter 5. Documentation
 
 5.1. Contributors
 
-   Last edited by: Bogdan-Andrei Iancu (@bogdan-iancu), Liviu
-   Chircu (@liviuchircu), Vlad Patrascu (@rvlad-patrascu), Razvan
-   Crainea (@razvancrainea), Vlad Paiu (@vladpaiu), Zero King
-   (@l2dy), Dan Pascu (@danpascu), Peter Lemenkov (@lemenkov),
-   Julián Moreno Patiño, Ionut Ionita (@ionutrazvanionita), Ionel
-   Cerghit (@ionel-cerghit), Walter Doekes (@wdoekes), Eseanu
-   Marius Cristian (@eseanucristian), Norman Brandinger (@NormB),
-   Anca Vamanu, Andrei Dragus, Hugues Mitonneau, Klaus Darilion,
-   Henning Westerholt (@henningw), Ovidiu Sas (@ovidiusas),
-   Daniel-Constantin Mierla (@miconda), Konstantin Bokarius, Edson
-   Gellert Schubert, Michel Bensoussan, Andy Pyles, Elena-Ramona
-   Modroiu.
+   Last edited by: Liviu Chircu (@liviuchircu), Bogdan-Andrei
+   Iancu (@bogdan-iancu), Ryan Bullock, Vlad Patrascu
+   (@rvlad-patrascu), Razvan Crainea (@razvancrainea), Vlad Paiu
+   (@vladpaiu), Zero King (@l2dy), Dan Pascu (@danpascu), Peter
+   Lemenkov (@lemenkov), Julián Moreno Patiño, Ionut Ionita
+   (@ionutrazvanionita), Ionel Cerghit (@ionel-cerghit), Walter
+   Doekes (@wdoekes), Eseanu Marius Cristian (@eseanucristian),
+   Norman Brandinger (@NormB), Anca Vamanu, Andrei Dragus, Hugues
+   Mitonneau, Klaus Darilion, Henning Westerholt (@henningw),
+   Ovidiu Sas (@ovidiusas), Daniel-Constantin Mierla (@miconda),
+   Konstantin Bokarius, Edson Gellert Schubert, Michel Bensoussan,
+   Andy Pyles, Elena-Ramona Modroiu.
 
    Documentation Copyrights:
 

@@ -42,6 +42,7 @@
 #include "../../timer.h"
 #include "../../pt.h"
 #include "../../lib/csv.h"
+#include "../../mod_fix.h"
 
 #include "records.h"
 #include "b2b_logic.h"
@@ -62,6 +63,7 @@ static int fixup_bridge_flags(void** param);
 static int fixup_init_id(void** param);
 static int fixup_check_avp(void** param);
 static int fixup_route(void** param);
+static int free_fixup_route(void** param);
 static mi_response_t *mi_trigger_scenario(const mi_params_t *params,
 								struct mi_handler *async_hdl);
 static mi_response_t *mi_b2b_bridge_2(const mi_params_t *params,
@@ -117,8 +119,8 @@ b2bl_table_t b2bl_htable;
 unsigned int b2bl_hsize = 10;
 static char* script_req_route;
 static char* script_reply_route;
-int global_req_rtid  = -1;
-int global_reply_rtid = -1;
+struct script_route_ref *global_req_rt_ref  = NULL;
+struct script_route_ref *global_reply_rt_ref = NULL;
 unsigned int b2b_clean_period = 100;
 unsigned int b2b_update_period = 100;
 str custom_headers = {0, 0};
@@ -179,6 +181,8 @@ str b2bl_mod_name = str_init("b2b_logic");
 str top_hiding_scen_s;
 str internal_scen_s;
 
+int new_ent_1_ctx_idx, new_ent_2_ctx_idx;
+
 /* used to identify the current tuple in local_route, in the context of a request
  * that is not triggerd by a received message from an ongoing b2b dialog */
 b2bl_tuple_t *local_ctx_tuple;
@@ -193,8 +197,8 @@ static const cmd_export_t cmds[]=
 		{CMD_PARAM_STR, fixup_init_id, 0},
 		{CMD_PARAM_STR|CMD_PARAM_OPT|CMD_PARAM_FIX_NULL,
 			fixup_init_flags, fixup_free_init_flags},
-		{CMD_PARAM_STR|CMD_PARAM_OPT, fixup_route, 0},
-		{CMD_PARAM_STR|CMD_PARAM_OPT, fixup_route ,0}, {0,0,0}},
+		{CMD_PARAM_STR|CMD_PARAM_OPT, fixup_route, free_fixup_route},
+		{CMD_PARAM_STR|CMD_PARAM_OPT, fixup_route ,free_fixup_route}, {0,0,0}},
 		REQUEST_ROUTE},
 	{"b2b_server_new", (cmd_function)b2bl_server_new, {
 		{CMD_PARAM_STR,0,0},
@@ -396,18 +400,18 @@ static int mod_init(void)
 	}
 
 	if (script_req_route) {
-		global_req_rtid = get_script_route_ID_by_name(script_req_route,
-			sroutes->request, RT_NO);
-		if (global_req_rtid < 1) {
+		global_req_rt_ref = ref_script_route_by_name(script_req_route,
+			sroutes->request, RT_NO, REQUEST_ROUTE, 0);
+		if (!ref_script_route_is_valid(global_req_rt_ref)) {
 			LM_ERR("route <%s> does not exist\n", script_req_route);
 			return -1;
 		}
 	}
 
 	if (script_reply_route) {
-		global_reply_rtid = get_script_route_ID_by_name(script_reply_route,
-			sroutes->request, RT_NO);
-		if (global_reply_rtid < 1) {
+		global_reply_rt_ref = ref_script_route_by_name(script_reply_route,
+			sroutes->request, RT_NO, REQUEST_ROUTE, 0);
+		if (!ref_script_route_is_valid(global_reply_rt_ref)) {
 			LM_ERR("route <%s> does not exist\n",script_reply_route);
 			return -1;
 		}
@@ -667,6 +671,9 @@ next_hdr:
 		return -1;
 	}
 
+	new_ent_1_ctx_idx = context_register_ptr(CONTEXT_GLOBAL, new_ent_ctx_destroy);
+	new_ent_2_ctx_idx = context_register_ptr(CONTEXT_GLOBAL, new_ent_ctx_destroy);
+
 	return 0;
 }
 
@@ -675,11 +682,12 @@ void b2bl_db_timer_update(unsigned int ticks, void* param)
 	b2b_logic_dump(0);
 }
 
-static void term_entity(b2bl_entity_id_t *entity, int hash_index)
+static void term_entity(b2bl_entity_id_t *entity, int hash_index, str *key)
 {
 	str bye = {BYE, BYE_LEN};
 	b2b_req_data_t req_data;
 	b2b_rpl_data_t rpl_data;
+	struct b2b_context *ctx;
 
 	if (entity->type == B2B_SERVER &&
 		entity->state != B2BL_ENT_CONFIRMED) {
@@ -696,19 +704,25 @@ static void term_entity(b2bl_entity_id_t *entity, int hash_index)
 			rpl_data.text = &requestTimeout;
 		}
 
-		b2bl_htable[hash_index].locked_by = process_no;
 		if(b2b_api.send_reply(&rpl_data) < 0)
 			LM_ERR("Sending reply failed - %d, [%.*s]\n",
 				rpl_data.code, entity->key.len,
 				entity->key.s);
-		b2bl_htable[hash_index].locked_by = -1;
 	} else {
-		memset(&req_data, 0, sizeof(b2b_req_data_t));
-		PREP_REQ_DATA(entity);
-		req_data.method =&bye;
-		b2bl_htable[hash_index].locked_by = process_no;
-		b2b_api.send_request(&req_data);
-		b2bl_htable[hash_index].locked_by = -1;
+		if ( key && ( !push_new_global_context() ||
+		(ctx=b2b_api.get_context())==NULL ||
+		pkg_str_dup(&ctx->b2bl_key, key)==0 )
+		) {
+			LM_ERR("preparing ctx for request failed, entity [%.*s]\n",
+				entity->key.len, entity->key.s);
+		} else {
+			memset(&req_data, 0, sizeof(b2b_req_data_t));
+			PREP_REQ_DATA(entity);
+			req_data.method =&bye;
+			b2b_api.send_request(&req_data);
+			if (key)
+				pop_pushed_global_context();
+		}
 	}
 }
 
@@ -722,7 +736,7 @@ void b2bl_clean(unsigned int ticks, void* param)
 
 	for(i = 0; i< b2bl_hsize; i++)
 	{
-		lock_get(&b2bl_htable[i].lock);
+		B2BL_LOCK_GET(i);
 		tuple = b2bl_htable[i].first;
 		while(tuple)
 		{
@@ -734,16 +748,16 @@ void b2bl_clean(unsigned int ticks, void* param)
 				if(tuple->bridge_entities[0] && tuple->bridge_entities[1] && !tuple->to_del)
 				{
 					if(!tuple->bridge_entities[0]->disconnected)
-						term_entity(tuple->bridge_entities[0], i);
+						term_entity(tuple->bridge_entities[0], i, tuple->key);
 
 					if(!tuple->bridge_entities[1]->disconnected)
-						term_entity(tuple->bridge_entities[1], i);
+						term_entity(tuple->bridge_entities[1], i, tuple->key);
 				}
 				b2bl_delete(tuple, i, 1, tuple->repl_flag != TUPLE_REPL_RECV);
 			}
 			tuple = tuple_next;
 		}
-		lock_release(&b2bl_htable[i].lock);
+		B2BL_LOCK_RELEASE(i);
 	}
 }
 
@@ -814,11 +828,23 @@ static int child_init(int rank)
 	return 0;
 }
 
+static str init_request_flags[] =
+{
+	str_init("transparent-auth"), /* B2BL_FLAG_TRANSPARENT_AUTH */
+	str_init("preserve-to"),      /* B2BL_FLAG_TRANSPARENT_TO */
+	STR_NULL
+};
+static str init_request_kv_flags[] =
+{
+	str_init("setup-timeout"),
+	STR_NULL
+};
+
 static int fixup_init_flags(void** param)
 {
 	str *s = (str*)*param;
-	int st;
 	struct b2b_params *init_params;
+	str flag_vals[1];
 
 	init_params = pkg_malloc(sizeof	*init_params);
 	if (!init_params) {
@@ -829,30 +855,24 @@ static int fixup_init_flags(void** param)
 
 	init_params->init_timeout = b2bl_th_init_timeout;
 
+	if (!s) {
+		*param = (void*)init_params;
+		return 0;
+	}
+
+	if (fixup_named_flags(param, init_request_flags, init_request_kv_flags,
+		flag_vals) < 0) {
+		LM_ERR("Failed to parse flags\n");
+		return -1;
+	}
+
+	init_params->flags = (unsigned int)(unsigned long)(void*)*param;
 	*param = (void*)init_params;
 
-	if (!s)
-		return 0;
-
-	for( st=0 ; st< s->len ; st++ ) {
-		switch (s->s[st])
-		{
-			case 't':
-				init_params->init_timeout = 0;
-				while (st<s->len-1 && isdigit(s->s[st+1])) {
-					init_params->init_timeout =
-						init_params->init_timeout*10 + s->s[st+1] - '0';
-					st++;
-				}
-				break;
-			case 'a':
-				init_params->flags |= B2BL_FLAG_TRANSPARENT_AUTH;
-				break;
-			case 'p':
-				init_params->flags |= B2BL_FLAG_TRANSPARENT_TO;
-				break;
-			default:
-				LM_WARN("unknown option `%c'\n", s->s[st]);
+	if (flag_vals[0].s) {
+		if (str2int(&flag_vals[0], &init_params->init_timeout) < 0) {
+			LM_ERR("timeout is not an integer\n");
+			return -1;
 		}
 	}
 
@@ -867,11 +887,25 @@ static int fixup_free_init_flags(void** param)
 	return 0;
 }
 
+static str bridge_flags[] =
+{
+	str_init("notify"),          /* B2BL_BR_FLAG_NOTIFY */
+	str_init("rollback-failed"), /* B2BL_BR_FLAG_RETURN_AFTER_FAILURE */
+	str_init("hold"),            /* B2BL_BR_FLAG_HOLD */
+	str_init("no-late-sdp"),     /* B2BL_BR_FLAG_RENEW_SDP */
+	STR_NULL
+};
+static str bridge_kv_flags[] =
+{
+	str_init("max_duration"),
+	STR_NULL
+};
+
 static int fixup_bridge_flags(void** param)
 {
 	str *s = (str*)*param;
-	int st;
 	struct b2b_bridge_params *bridge_params;
+	str flag_vals[1];
 
 	bridge_params = pkg_malloc(sizeof *bridge_params);
 	if (!bridge_params) {
@@ -880,37 +914,23 @@ static int fixup_bridge_flags(void** param)
 	}
 	memset(bridge_params, 0, sizeof *bridge_params);
 
-	bridge_params->lifetime = 0;
+	if (!s) {
+		*param = (void*)bridge_params;
+		return 0;
+	}
 
+	if (fixup_named_flags(param, bridge_flags, bridge_kv_flags, flag_vals) < 0) {
+		LM_ERR("Failed to parse flags\n");
+		return -1;
+	}
+
+	bridge_params->flags = (unsigned int)(unsigned long)(void*)*param;
 	*param = (void*)bridge_params;
 
-	if (!s)
-		return 0;
-
-	for( st=0 ; st< s->len ; st++ ) {
-		switch (s->s[st])
-		{
-			case 't':
-				while (st<s->len-1 && isdigit(s->s[st+1])) {
-					bridge_params->lifetime =
-						bridge_params->lifetime*10 + s->s[st+1] - '0';
-					st++;
-				}
-				break;
-			case 'n':
-				bridge_params->flags |= B2BL_BR_FLAG_NOTIFY;
-				break;
-			case 'f':
-				bridge_params->flags |= B2BL_BR_FLAG_RETURN_AFTER_FAILURE;
-				break;
-			case 'h':
-				bridge_params->flags |= B2BL_BR_FLAG_HOLD;
-				break;
-			case 'r':
-				bridge_params->flags |= B2BL_BR_FLAG_RENEW_SDP;
-				break;
-			default:
-				LM_WARN("unknown option `%c'\n", s->s[st]);
+	if (flag_vals[0].s) {
+		if (str2int(&flag_vals[0], &bridge_params->lifetime) < 0) {
+			LM_ERR("duration is not an integer\n");
+			return -1;
 		}
 	}
 
@@ -930,19 +950,29 @@ static int fixup_init_id(void** param)
 
 static int fixup_route(void** param)
 {
-	int rt;
+	struct script_route_ref *rt;
 
-	rt = get_script_route_ID_by_name_str((str*)*param, sroutes->request, RT_NO);
-	if (rt == -1) {
+	rt = ref_script_route_by_name_str( (str*)*param,
+			sroutes->request, RT_NO, REQUEST_ROUTE, 0);
+	if ( !ref_script_route_is_valid(rt) ) {
 		LM_ERR("route <%.*s> does not exist\n",
 			((str*)*param)->len, ((str*)*param)->s);
 		return -1;
 	}
 
-	*param = (void*)(unsigned long)rt;
+	*param = (void*)rt;
 
 	return 0;
 }
+
+
+static int free_fixup_route(void** param)
+{
+	if (*param)
+		unref_script_route( (struct script_route_ref *)*param );
+	return 0;
+}
+
 
 static int fixup_check_avp(void** param)
 {
@@ -1042,8 +1072,8 @@ mi_response_t *mi_trigger_scenario(const mi_params_t *params,
 
 	memset(&init_params, 0, sizeof init_params);
 	init_params.id = &scenario_id;
-	init_params.req_routeid = global_req_rtid;
-	init_params.reply_routeid = global_reply_rtid;
+	init_params.req_route = global_req_rt_ref;
+	init_params.reply_route = global_reply_rt_ref;
 
 	memset(&scen_params, 0, sizeof scen_params);
 	scen_params.e1_type = B2B_CLIENT;
@@ -1171,30 +1201,30 @@ static mi_response_t *mi_b2b_terminate_call(const mi_params_t *params,
 	if (b2bl_get_tuple_key(&key, &hash_index, &local_index) < 0)
 		return init_mi_error(404, MI_SSTR("B2B session not found"));
 
-	lock_get(&b2bl_htable[hash_index].lock);
+	B2BL_LOCK_GET(hash_index);
 
 	tuple = b2bl_search_tuple_safe(hash_index, local_index);
 	if(tuple == NULL)
 	{
-		lock_release(&b2bl_htable[hash_index].lock);
+		B2BL_LOCK_RELEASE(hash_index);
 		return init_mi_error(404, MI_SSTR("B2B session not found"));
 	}
 
 	if(tuple->bridge_entities[0] && tuple->bridge_entities[1] && !tuple->to_del)
 	{
 		if(!tuple->bridge_entities[0]->disconnected) {
-			term_entity(tuple->bridge_entities[0], hash_index);
+			term_entity(tuple->bridge_entities[0], hash_index, &key);
 			tuple->bridge_entities[0]->disconnected = 1;
 		}
 
 		if(!tuple->bridge_entities[1]->disconnected) {
-			term_entity(tuple->bridge_entities[1], hash_index);
+			term_entity(tuple->bridge_entities[1], hash_index, &key);
 			tuple->bridge_entities[1]->disconnected = 1;
 		}
 	}
 	b2b_mark_todel(tuple);
 
-	lock_release(&b2bl_htable[hash_index].lock);
+	B2BL_LOCK_RELEASE(hash_index);
 
 	return init_mi_result_ok();
 }
@@ -1324,7 +1354,7 @@ static mi_response_t *mi_b2b_list(const mi_params_t *params,
 
 	for(i = 0; i< b2bl_hsize; i++)
 	{
-		lock_get(&b2bl_htable[i].lock);
+		B2BL_LOCK_GET(i);
 		tuple = b2bl_htable[i].first;
 		while(tuple)
 		{
@@ -1415,12 +1445,12 @@ static mi_response_t *mi_b2b_list(const mi_params_t *params,
 			}
 			tuple = tuple->next;
 		}
-		lock_release(&b2bl_htable[i].lock);
+		B2BL_LOCK_RELEASE(i);
 	}
 
 	return resp;
 error:
-	lock_release(&b2bl_htable[i].lock);
+	B2BL_LOCK_RELEASE(i);
 	LM_ERR("Unable to create reply\n");
 	free_mi_response(resp);
 	return NULL;
@@ -1431,14 +1461,12 @@ static b2bl_tuple_t *ctx_search_tuple(struct b2b_context *ctx, int *locked)
 	b2bl_tuple_t *tuple;
 
 	*locked = 1;
-	if (b2bl_htable[ctx->hash_index].locked_by != process_no)
-		lock_get(&b2bl_htable[ctx->hash_index].lock);
+	B2BL_LOCK_GET_AUX(ctx->hash_index);
 
 	tuple = b2bl_search_tuple_safe(ctx->hash_index, ctx->local_index);
 	if (!tuple) {
 		LM_ERR("Tuple [%u, %u] not found\n", ctx->hash_index, ctx->local_index);
-		if (b2bl_htable[ctx->hash_index].locked_by != process_no)
-			lock_release(&b2bl_htable[ctx->hash_index].lock);
+		B2BL_LOCK_RELEASE_AUX(ctx->hash_index);
 		locked = 0;
 		return NULL;
 	}
@@ -1521,8 +1549,8 @@ int pv_get_b2bl_key(struct sip_msg *msg, pv_param_t *param, pv_value_t *res)
 	res->flags = PV_VAL_STR;
 	res->rs = *tuple->key;
 
-	if (locked && b2bl_htable[tuple->hash_index].locked_by != process_no)
-		lock_release(&b2bl_htable[tuple->hash_index].lock);
+	if (locked)
+		B2BL_LOCK_RELEASE_AUX(tuple->hash_index);
 
 	return 0;
 }
@@ -1541,8 +1569,8 @@ int pv_get_scenario(struct sip_msg *msg, pv_param_t *param, pv_value_t *res)
 	res->flags = PV_VAL_STR;
 	res->rs = *tuple->scenario_id;
 
-	if (locked && b2bl_htable[tuple->hash_index].locked_by != process_no)
-		lock_release(&b2bl_htable[tuple->hash_index].lock);
+	if (locked)
+		B2BL_LOCK_RELEASE_AUX(tuple->hash_index);
 
 	return 0;
 }
@@ -1617,8 +1645,8 @@ int pv_get_entity(struct sip_msg *msg, pv_param_t *param, pv_value_t *res)
 		return pv_get_null(msg, param, res);
 	}
 
-	if (!locked && b2bl_htable[tuple->hash_index].locked_by != process_no)
-		lock_get(&b2bl_htable[tuple->hash_index].lock);
+	if (!locked)
+		B2BL_LOCK_GET_AUX(tuple->hash_index);
 
 	curr_entities[0] = tuple->bridge_entities[0];
 	curr_entities[1] = tuple->bridge_entities[1];
@@ -1750,14 +1778,12 @@ int pv_get_entity(struct sip_msg *msg, pv_param_t *param, pv_value_t *res)
 
 	res->flags = PV_VAL_STR;
 
-	if (b2bl_htable[tuple->hash_index].locked_by != process_no)
-		lock_release(&b2bl_htable[tuple->hash_index].lock);
+	B2BL_LOCK_RELEASE_AUX(tuple->hash_index);
 
 	return 0;
 
 ret_null:
-	if (b2bl_htable[tuple->hash_index].locked_by != process_no)
-		lock_release(&b2bl_htable[tuple->hash_index].lock);
+	B2BL_LOCK_RELEASE_AUX(tuple->hash_index);
 	return pv_get_null(msg, param, res);
 }
 
@@ -1929,17 +1955,17 @@ int pv_get_ctx(struct sip_msg *msg,  pv_param_t *param, pv_value_t *res)
 		return pv_get_null(msg, param, res);
 	}
 
-	if (tuple && !locked && b2bl_htable[tuple->hash_index].locked_by != process_no)
-		lock_get(&b2bl_htable[tuple->hash_index].lock);
+	if (tuple && !locked)
+		B2BL_LOCK_GET_AUX(tuple->hash_index);
 
 	if (fetch_ctx_value(*vals, &param->pvn.u.isname.name.s, &param->pvv) != 0) {
-		if (tuple && b2bl_htable[tuple->hash_index].locked_by != process_no)
-			lock_release(&b2bl_htable[tuple->hash_index].lock);
+		if (tuple)
+			B2BL_LOCK_RELEASE_AUX(tuple->hash_index);
 		return pv_get_null(msg, param, res);
 	}
 
-	if (tuple && b2bl_htable[tuple->hash_index].locked_by != process_no)
-		lock_release(&b2bl_htable[tuple->hash_index].lock);
+	if (tuple)
+			B2BL_LOCK_RELEASE_AUX(tuple->hash_index);
 
 	res->flags = PV_VAL_STR;
 	res->rs = param->pvv;
@@ -1962,8 +1988,8 @@ int pv_set_ctx(struct sip_msg* msg, pv_param_t *param, int op, pv_value_t *val)
 		return -1;
 	}
 
-	if (tuple && !locked && b2bl_htable[tuple->hash_index].locked_by != process_no)
-		lock_get(&b2bl_htable[tuple->hash_index].lock);
+	if (tuple && !locked)
+		B2BL_LOCK_GET_AUX(tuple->hash_index);
 
 	if (val==NULL || val->flags&(PV_VAL_NONE|PV_VAL_NULL|PV_VAL_EMPTY)) {
 		/* delete value */
@@ -1985,14 +2011,15 @@ int pv_set_ctx(struct sip_msg* msg, pv_param_t *param, int op, pv_value_t *val)
 		}
 	}
 
-	if (tuple && b2bl_htable[tuple->hash_index].locked_by != process_no)
-		lock_release(&b2bl_htable[tuple->hash_index].lock);
+
+	if (tuple)
+		B2BL_LOCK_RELEASE_AUX(tuple->hash_index);
 
 	return 0;
 
 error:
-	if (tuple && b2bl_htable[tuple->hash_index].locked_by != process_no)
-		lock_release(&b2bl_htable[tuple->hash_index].lock);
+	if (tuple)
+		B2BL_LOCK_RELEASE_AUX(tuple->hash_index);
 	return -1;
 }
 
@@ -2021,8 +2048,7 @@ int b2bl_register_cb(str* key, b2bl_cback_f cbf, void* cb_param,
 		return -1;
 	}
 
-	if (b2bl_htable[hash_index].locked_by != process_no)
-		lock_get(&b2bl_htable[hash_index].lock);
+	B2BL_LOCK_GET_AUX(hash_index);
 
 	tuple = b2bl_search_tuple_safe(hash_index, local_index);
 	if(tuple == NULL)
@@ -2038,8 +2064,7 @@ int b2bl_register_cb(str* key, b2bl_cback_f cbf, void* cb_param,
 
 	ret = 0;
 error:
-	if (b2bl_htable[hash_index].locked_by != process_no)
-		lock_release(&b2bl_htable[hash_index].lock);
+	B2BL_LOCK_RELEASE_AUX(hash_index);
 	return ret;
 }
 
@@ -2051,8 +2076,8 @@ static str *b2bl_get_key(void)
 	b2bl_tuple_t *tuple = get_ctx_tuple(&locked);
 
 	if (!tuple) {
-		if (locked && b2bl_htable[tuple->hash_index].locked_by != process_no)
-			lock_release(&b2bl_htable[tuple->hash_index].lock);
+		if (locked)
+			B2BL_LOCK_RELEASE_AUX(tuple->hash_index);
 		return NULL;
 	}
 
@@ -2062,8 +2087,8 @@ static str *b2bl_get_key(void)
 	ret.len = tuple->key->len;
 	memcpy(ret.s, tuple->key->s, ret.len);
 
-	if (locked && b2bl_htable[tuple->hash_index].locked_by != process_no)
-		lock_release(&b2bl_htable[tuple->hash_index].lock);
+	if (locked)
+		B2BL_LOCK_RELEASE_AUX(tuple->hash_index);
 
 	return &ret;
 }
@@ -2074,6 +2099,7 @@ static int b2bl_get_entity_info(str *key, struct sip_msg *msg, int entity, struc
 	b2bl_tuple_t *tuple;
 	b2bl_entity_id_t *bentity = NULL;
 	int locked = 0;
+	int rc = -1;
 
 	if (!info)
 		return -4;
@@ -2083,12 +2109,13 @@ static int b2bl_get_entity_info(str *key, struct sip_msg *msg, int entity, struc
 
 	if (key) {
 		tuple = b2bl_get_tuple(key);
+		if (tuple)
+			locked = 1;
 	} else {
 		tuple = get_ctx_tuple(&locked);
 
-		if (tuple && locked &&
-			b2bl_htable[tuple->hash_index].locked_by != process_no)
-			lock_release(&b2bl_htable[tuple->hash_index].lock);
+		if (tuple && !locked)
+			B2BL_LOCK_GET_AUX(tuple->hash_index);
 	}
 	if (!tuple)
 		return -2;
@@ -2106,11 +2133,13 @@ static int b2bl_get_entity_info(str *key, struct sip_msg *msg, int entity, struc
 					bentity = tuple->bridge_entities[(entity == -2?0:1)];
 			}
 		} else {
-			if (!msg)
-				return -2;
+			if (!msg) {
+				rc = -2;
+				goto end;
+			}
 			if (get_callid(msg, &callid) < 0) {
 				LM_ERR("Failed to get callid from SIP message\n");
-				return -1;
+				goto end;
 			}
 			if (tuple->bridge_entities[0] && tuple->bridge_entities[0]->dlginfo) {
 				if (!str_strcmp(&callid,
@@ -2131,22 +2160,29 @@ static int b2bl_get_entity_info(str *key, struct sip_msg *msg, int entity, struc
 	} else {
 		bentity = tuple->bridge_entities[entity];
 	}
-	if (!bentity)
-		return -3;
+	if (!bentity) {
+		rc = -3;
+		goto end;
+	}
 	if (bentity->key.len && pkg_str_dup(&info->key, &bentity->key) < 0)
-		return -1;
+		goto end;
 	if (bentity->dlginfo) {
 		if (bentity->dlginfo->callid.len
 				&& pkg_str_dup(&info->callid, &bentity->dlginfo->callid) < 0)
-			return -1;
+			goto end;
 		if (bentity->dlginfo->fromtag.len
 				&& pkg_str_dup(&info->fromtag, &bentity->dlginfo->fromtag) < 0)
-			return -1;
+			goto end;
 		if (bentity->dlginfo->totag.len
 				&& pkg_str_dup(&info->totag, &bentity->dlginfo->totag) < 0)
-			return -1;
+			goto end;
 	}
-	return 0;
+
+	rc = 0;
+end:
+	if (locked)
+		B2BL_LOCK_RELEASE_AUX(tuple->hash_index);
+	return rc;
 }
 
 static void b2bl_release_entity_info(struct b2b_entity_info_t *info)
@@ -2220,18 +2256,18 @@ int b2bl_restore_upper_info(str* b2bl_key, b2bl_cback_f cbf, void* param,
 	}
 	LM_DBG("hi= %d, li=%d\n", hash_index, local_index);
 
-	lock_get(&b2bl_htable[hash_index].lock);
+	B2BL_LOCK_GET(hash_index);
 	tuple = b2bl_search_tuple_safe(hash_index, local_index);
 	if(tuple == NULL)
 	{
 		LM_ERR("B2B logic record not found\n");
-		lock_release(&b2bl_htable[hash_index].lock);
+		B2BL_LOCK_RELEASE(hash_index);
 		return -1;
 	}
 	tuple->cb.f = cbf;
 	tuple->cb.mask = cb_mask;
 	tuple->cb.param = param;
-	lock_release(&b2bl_htable[hash_index].lock);
+	B2BL_LOCK_RELEASE(hash_index);
 
 	return 0;
 }

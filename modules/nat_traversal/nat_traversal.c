@@ -772,7 +772,7 @@ test_private_contact(struct sip_msg *msg)
     if (!get_contact_uri(msg, &uri, &contact))
         return False;
 
-    return ip_addr_is_1918(&(uri.host));
+    return ip_addr_is_1918(&(uri.host), 0);
 }
 
 
@@ -780,7 +780,7 @@ test_private_contact(struct sip_msg *msg)
 static Bool
 test_private_via(struct sip_msg *msg)
 {
-    return ip_addr_is_1918(&(msg->via1->host));
+    return ip_addr_is_1918(&(msg->via1->host), 0);
 }
 
 
@@ -1763,6 +1763,7 @@ restore_keepalive_state(void)
 static int
 mod_init(void)
 {
+#define MIN_KEEPALIVE_INTERVAL 2
     int *param;
 
     if (keepalive_interval <= 0) {
@@ -1836,10 +1837,10 @@ mod_init(void)
     restore_keepalive_state();
 
     // check keepalive interval and add keepalive timer process
-    if (keepalive_interval < 10) {
-        LM_WARN("keepalive_interval should be at least 10 seconds\n");
-        LM_NOTICE("using 10 seconds for keepalive_interval\n");
-        keepalive_interval = 10;
+    if (keepalive_interval < MIN_KEEPALIVE_INTERVAL) {
+        LM_WARN("keepalive_interval should be at least %d seconds\n", MIN_KEEPALIVE_INTERVAL);
+        LM_NOTICE("using %d seconds for keepalive_interval\n", MIN_KEEPALIVE_INTERVAL);
+        keepalive_interval = MIN_KEEPALIVE_INTERVAL;
     }
 
     // allocate a shm variable to keep the counter used by the keepalive

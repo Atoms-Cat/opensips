@@ -375,7 +375,7 @@ int tr_eval_string(struct sip_msg *msg, tr_param_t *tp, int subtype,
 			val->flags = PV_VAL_STR;
 			val->ri = 0;
 			val->rs.s = _tr_buffer;
-			val->rs.len = string2hex(sha_buf, sha_hash_len, _tr_buffer);
+			val->rs.len = string2hex((char *)sha_buf, sha_hash_len, _tr_buffer);
 			_tr_buffer[sha_hash_len*2] = '\0';
 			break;
 		case TR_S_CRC32:
@@ -2001,7 +2001,7 @@ int tr_eval_ip(struct sip_msg *msg, tr_param_t *tp,int subtype,
 			if(!(val->flags&PV_VAL_STR))
 				val->rs.s = int2str(val->ri, &val->rs.len);
 
-			val->ri = ip_addr_is_1918(&(val->rs));
+			val->ri = ip_addr_is_1918(&(val->rs), 0);
 
 			val->flags = PV_TYPE_INT|PV_VAL_INT|PV_VAL_STR;
 			val->rs.s = int2str(val->ri, &val->rs.len);
@@ -2472,7 +2472,7 @@ int tr_eval_nameaddr(struct sip_msg *msg, tr_param_t *tp, int subtype,
 	}
 
 	/* check if there is an index set */
-	if (tp && (tp->type != TR_NA_PARAM || tp->next)) {
+	if (tp && (subtype != TR_NA_PARAM || tp->next)) {
 		/* we do have an index */
 		switch (tp->type) {
 			case TR_PARAM_NUMBER:
@@ -2489,8 +2489,7 @@ int tr_eval_nameaddr(struct sip_msg *msg, tr_param_t *tp, int subtype,
 				index = v.ri;
 				break;
 			default:
-				LM_ERR("invalid index type: %d; integer expected\n",
-						tp->type);
+				LM_ERR("unsupported index type: %d\n", tp->type);
 				goto error;
 		}
 		tp = tp->next;

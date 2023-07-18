@@ -29,26 +29,49 @@
 
 #ifdef PROFILING
 #include <gperftools/profiler.h>
-static inline void _ProfilerStart(pid_t pid, const char *proc_desc)
+
+static inline int _ProfilerStart(pid_t pid, const char *proc_desc)
 {
 	char fname[50];
+	int rval;
 
 	LM_NOTICE("START profiling in process %s (%d)\n",
 	          proc_desc, pid);
 
 	if (pid == 0) {
-		ProfilerStart("gperf-attendant.prof");
-		return;
+		rval = ProfilerStart("gperf-attendant.prof") == 0 ? -1 : 0;
+		return rval;
 	}
 
 	if (!strcmp(proc_desc, "UDP receiver"))
 		sprintf(fname, "gperf-udp-%d.prof", getpid());
+	else if (!strcmp(proc_desc, "SIP receiver TCP"))
+		sprintf(fname, "gperf-tcp-%d.prof", getpid());
 	else if (!strcmp(proc_desc, "Timer handler"))
 		sprintf(fname, "gperf-timer-%d.prof", getpid());
 	else
 		sprintf(fname, "gperf-%d.prof", getpid());
 
-	ProfilerStart(fname);
+	return ProfilerStart(fname) == 0 ? -1 : 0;
+}
+
+static inline int _ProfilerStart_child(const struct internal_fork_params *ifpp)
+{
+	if (_ProfilerStart(pt[process_no].pid, ifpp->proc_desc) != 0) {
+		LM_CRIT("failed to start profiler for process %d", process_no);
+		return -1;
+	}
+	return 0;
+}
+
+static inline int _ProfilerStart_parent(void)
+{
+
+	if (_ProfilerStart(0, "attendant") != 0) {
+		LM_CRIT("failed to start profiling\n");
+		return -1;
+	}
+	return 0;
 }
 
 static inline void _ProfilerStop(void)
@@ -56,11 +79,14 @@ static inline void _ProfilerStop(void)
 	ProfilerStop();
 
 	LM_NOTICE("STOP profiling in process %s (%d)\n",
-	          pt[process_no].desc, pt[process_no].pid);
+	          pt ? pt[process_no].desc : "<none>",
+	          pt ? pt[process_no].pid : -1);
 }
 #else
+static inline int _ProfilerStart(pid_t pid, const char *proc_desc) { return 0; }
+static inline int _ProfilerStart_child(const struct internal_fork_params *ifpp) { return 0; }
+static inline int _ProfilerStart_parent(void) { return 0; }
 	#define ProfilerStart(...)
-	#define _ProfilerStart(...)
 	#define ProfilerStop(...)
 	#define _ProfilerStop(...)
 #endif

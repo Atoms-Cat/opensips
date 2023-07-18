@@ -685,7 +685,7 @@ static int pv_get_xuri_attr(struct sip_msg *msg, struct sip_uri *parsed_uri,
 		if(parsed_uri->transport_val.s==NULL) {
 			get_uri_port(parsed_uri, &proto);
 			proto_s.s = protos[proto].name;
-			proto_s.len = strlen(proto_s.s);
+			proto_s.len = proto_s.s ? strlen(proto_s.s) : 0;
 			return pv_get_strintval(msg, param, res, &proto_s, (int)proto);
 		}
 		return pv_get_strintval(msg, param, res, &parsed_uri->transport_val,
@@ -1483,7 +1483,7 @@ static int pv_get_dsturi_attr(struct sip_msg *msg, pv_param_t *param,
 		if(uri.transport_val.s==NULL) {
 			get_uri_port(&uri, &proto);
 			proto_s.s = protos[proto].name;
-			proto_s.len = strlen(proto_s.s);
+			proto_s.len = proto_s.s ? strlen(proto_s.s) : 0;
 			return pv_get_strintval(msg, param, res, &proto_s, (int)proto);
 		}
 		return pv_get_strintval(msg, param, res, &uri.transport_val,
@@ -3233,7 +3233,7 @@ static int pv_set_branch_fields(struct sip_msg* msg, pv_param_t *param,
 				return -1;
 			}
 			flags = (!val||val->flags&PV_VAL_NULL)?
-				0 : flag_list_to_bitmask(str2const(&val->rs), FLAG_TYPE_BRANCH, FLAG_DELIM);
+				0 : flag_list_to_bitmask(str2const(&val->rs), FLAG_TYPE_BRANCH, FLAG_DELIM, 0);
 			return update_branch( idx, NULL, NULL,
 				NULL, NULL, &flags, NULL);
 		case BR_SOCKET_ID: /* set SOCKET */
@@ -3855,7 +3855,10 @@ static int branch_flag_get(struct sip_msg *msg,  pv_param_t *param, pv_value_t *
 /**
  * the table with core pseudo-variables
  */
-static const pv_export_t _pv_names_table[] = {
+#ifndef FUZZ_BUILD
+static
+#endif
+const pv_export_t _pv_names_table[] = {
 	{str_init("avp"), PVT_AVP, pv_get_avp, pv_set_avp,
 		pv_parse_avp_name, pv_parse_avp_index, 0, 0},
 	{str_init("hdr"), PVT_HDR, pv_get_hdr, 0, pv_parse_hdr_name,
@@ -4590,7 +4593,7 @@ error:
 int pv_parse_format(const str *in, pv_elem_p *el)
 {
 	char *p, *p0;
-	int n = 0;
+	/*int n = 0;*/
 	pv_elem_p e, e0;
 	str s;
 
@@ -4624,7 +4627,7 @@ int pv_parse_format(const str *in, pv_elem_p *el)
 			goto error;
 		}
 		memset(e, 0, sizeof(pv_elem_t));
-		n++;
+		/*n++;*/
 		if(*el == NULL)
 			*el = e;
 		if(e0)

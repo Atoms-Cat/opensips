@@ -72,9 +72,9 @@ enum b2b_tuple_state {
 /* tuple bridge flags */
 #define B2BL_BR_FLAG_NOTIFY                        (1<<0)
 #define B2BL_BR_FLAG_RETURN_AFTER_FAILURE          (1<<1)
-#define B2BL_BR_FLAG_DONT_DELETE_BRIDGE_INITIATOR  (1<<2)
-#define B2BL_BR_FLAG_HOLD                          (1<<3)
-#define B2BL_BR_FLAG_RENEW_SDP                     (1<<4)
+#define B2BL_BR_FLAG_HOLD                          (1<<2)
+#define B2BL_BR_FLAG_RENEW_SDP                     (1<<3)
+#define B2BL_BR_FLAG_DONT_DELETE_BRIDGE_INITIATOR  (1<<4)
 #define B2BL_BR_FLAG_PROV_MEDIA                    (1<<5)
 #define B2BL_BR_FLAG_NO_OLD_ENT                    (1<<6)
 
@@ -104,8 +104,8 @@ struct b2b_params
 {
 	unsigned int flags;
 	unsigned int init_timeout;
-	int req_routeid;
-	int reply_routeid;
+	struct script_route_ref *req_route;
+	struct script_route_ref *reply_route;
 	str *id;
 };
 
@@ -144,12 +144,14 @@ extern str b2bl_dbtable;
 extern char* b2bl_db_buf;
 extern int b2bl_db_mode;
 extern unsigned int b2bl_th_init_timeout;
-extern int global_req_rtid;
-extern int global_reply_rtid;
+extern struct script_route_ref *global_req_rt_ref;
+extern struct script_route_ref *global_reply_rt_ref;
 extern int b2b_early_update;
 
 extern str top_hiding_scen_s;
 extern str internal_scen_s;
+
+extern int new_ent_1_ctx_idx, new_ent_2_ctx_idx;
 
 extern struct b2bl_route_ctx cur_route_ctx;
 
@@ -198,11 +200,40 @@ static inline int b2b_get_request_id(str* request)
 #define get_tracer(_tuple) \
 	( (_tuple)->tracer.f ? &((_tuple)->tracer) : NULL )
 
+
+#define B2BL_LOCK_GET(hash_index) \
+	do { \
+		lock_get(&b2bl_htable[hash_index].lock); \
+		b2bl_htable[hash_index].locked_by = process_no; \
+	} while (0)
+
+#define B2BL_LOCK_RELEASE(hash_index) \
+	do { \
+		b2bl_htable[hash_index].locked_by = -1; \
+		lock_release(&b2bl_htable[hash_index].lock); \
+	} while (0)
+
+#define B2BL_LOCK_GET_AUX(hash_index) \
+	do { \
+		if (b2bl_htable[hash_index].locked_by != process_no) \
+			lock_get(&b2bl_htable[hash_index].lock); \
+	} while (0)
+
+#define B2BL_LOCK_RELEASE_AUX(hash_index) \
+	do { \
+		if (b2bl_htable[hash_index].locked_by != process_no) \
+			lock_release(&b2bl_htable[hash_index].lock); \
+	} while (0)
+
 int b2b_add_dlginfo(str* key, str* entity_key,int src, b2b_dlginfo_t* info, void *param);
 int b2b_server_notify(struct sip_msg* msg, str* key, int type,
 		str *logic_key, void* param, int flags);
 int b2b_client_notify(struct sip_msg* msg, str* key, int type,
 		str *logic_key, void* param, int flags);
 void b2bl_db_init(void);
+
+int b2b_get_local_contact(struct sip_msg *msg, str *from_uri, str *local_contact);
+
+void new_ent_ctx_destroy(void *e);
 
 #endif

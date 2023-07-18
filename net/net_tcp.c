@@ -161,7 +161,10 @@ extern void handle_sigs(void);
 
 static inline int init_sock_keepalive(int s, struct tcp_conn_profile *prof)
 {
-	int optval, ka;
+	int ka;
+#if defined(HAVE_TCP_KEEPINTVL) || defined(HAVE_TCP_KEEPIDLE) || defined(HAVE_TCP_KEEPCNT)
+	int optval;
+#endif
 
 	if (prof->keepinterval || prof->keepidle || prof->keepcount)
 		ka = 1; /* force on */
@@ -203,11 +206,24 @@ static inline int init_sock_keepalive(int s, struct tcp_conn_profile *prof)
 	return 0;
 }
 
+static inline void set_sock_reuseport(int s)
+{
+	int yes = 1;
+
+	if (setsockopt(s,SOL_SOCKET,SO_REUSEPORT,&yes,sizeof(yes))<0){
+		LM_WARN("setsockopt failed to set SO_REUSEPORT: %s\n",
+			strerror(errno));
+	}
+	if (setsockopt(s,SOL_SOCKET,SO_REUSEADDR,&yes,sizeof(yes))<0){
+		LM_WARN("setsockopt failed to set SO_REUSEADDR: %s\n",
+			strerror(errno));
+	}
+}
 
 /*! \brief Set all socket/fd options:  disable nagle, tos lowdelay,
  * non-blocking
  * \return -1 on error */
-int tcp_init_sock_opt(int s, struct tcp_conn_profile *prof)
+int tcp_init_sock_opt(int s, struct tcp_conn_profile *prof, enum si_flags socketflags)
 {
 	int flags;
 	int optval;
@@ -232,6 +248,8 @@ int tcp_init_sock_opt(int s, struct tcp_conn_profile *prof)
 	}
 
 	init_sock_keepalive(s, prof);
+	if (socketflags & SI_REUSEPORT)
+		set_sock_reuseport(s);
 
 	/* non-blocking */
 	flags=fcntl(s, F_GETFL);
@@ -360,6 +378,8 @@ int tcp_init_listener(struct socket_info *si)
 	}
 
 	init_sock_keepalive(si->socket, &tcp_con_df_profile);
+	if (si->flags & SI_REUSEPORT)
+		set_sock_reuseport(si->socket);
 	if (bind(si->socket, &addr->s, sockaddru_len(*addr))==-1){
 		LM_ERR("bind(%x, %p, %d) on %s:%d : %s\n",
 				si->socket, &addr->s,
@@ -712,6 +732,9 @@ static void _tcpconn_rm(struct tcp_connection* c, int no_event)
 		c->async = NULL;
 	}
 
+	if (c->con_req)
+		shm_free(c->con_req);
+
 	if (protos[c->type].net.conn_clean)
 		protos[c->type].net.conn_clean(c);
 
@@ -863,7 +886,7 @@ static struct tcp_connection* tcpconn_new(int sock, union sockaddr_union* su,
 	c->rcv.src_port=su_getport(su);
 	c->rcv.bind_address = si;
 	c->rcv.dst_ip = si->address;
-	su_size = sockaddru_len(local_su);
+	su_size = sockaddru_len(*su);
 	if (getsockname(sock, (struct sockaddr *)&local_su, &su_size)<0) {
 		LM_ERR("failed to get info on received interface/IP %d/%s\n",
 			errno, strerror(errno));
@@ -1068,7 +1091,7 @@ static inline int handle_new_connect(struct socket_info* si)
 	}
 
 	tcp_con_get_profile(&su, &si->su, si->proto, &prof);
-	if (tcp_init_sock_opt(new_sock, &prof)<0){
+	if (tcp_init_sock_opt(new_sock, &prof, si->flags)<0){
 		LM_ERR("tcp_init_sock_opt failed\n");
 		close(new_sock);
 		return 1; /* success, because the accept was successful */
@@ -1312,9 +1335,7 @@ inline static int handle_tcp_worker(struct tcp_worker* tcp_c, int fd_i)
 			sh_log(tcpconn->hist, TCP_UNREF, "tcpworker release write, (%d)", tcpconn->refcnt);
 			tcpconn_put(tcpconn);
 			break;
-		case ASYNC_WRITE:
-			/* fall through*/
-		case ASYNC_WRITE2:
+		case ASYNC_WRITE_TCPW:
 			if (tcpconn->state==S_CONN_BAD){
 				sh_log(tcpconn->hist, TCP_UNREF, "tcpworker async write bad, (%d)", tcpconn->refcnt);
 				tcpconn_destroy(tcpconn);
@@ -1326,12 +1347,10 @@ inline static int handle_tcp_worker(struct tcp_worker* tcp_c, int fd_i)
 			reactor_add_writer( tcpconn->s, F_TCPCONN, RCT_PRIO_NET, tcpconn);
 			tcpconn->flags&=~F_CONN_REMOVED_WRITE;
 			break;
-		case CONN_ERROR:
+		case CONN_ERROR_TCPW:
 		case CONN_DESTROY:
 		case CONN_EOF:
 			/* WARNING: this will auto-dec. refcnt! */
-			/* fall through*/
-		case CONN_ERROR2:
 			if ((tcpconn->flags & F_CONN_REMOVED) != F_CONN_REMOVED &&
 				(tcpconn->s!=-1)){
 				reactor_del_all( tcpconn->s, -1, IO_FD_CLOSING);
@@ -1427,8 +1446,7 @@ inline static int handle_worker(struct process_table* p, int fd_i)
 		goto end;
 	}
 	switch(cmd){
-		case CONN_ERROR:
-		case CONN_ERROR2:
+		case CONN_ERROR_GENW:
 			/* remove from reactor only if the fd exists, and it wasn't
 			 * removed before */
 			if ((tcpconn->flags & F_CONN_REMOVED) != F_CONN_REMOVED &&
@@ -1480,8 +1498,7 @@ inline static int handle_worker(struct process_table* p, int fd_i)
 			reactor_add_writer( tcpconn->s, F_TCPCONN, RCT_PRIO_NET, tcpconn);
 			tcpconn->flags&=~F_CONN_REMOVED_WRITE;
 			break;
-		case ASYNC_WRITE:
-		case ASYNC_WRITE2:
+		case ASYNC_WRITE_GENW:
 			if (tcpconn->state==S_CONN_BAD){
 				tcpconn->lifetime=0;
 				break;
@@ -1918,6 +1935,11 @@ static int fork_dynamic_tcp_process(void *foo)
 {
 	int p_id;
 	int r;
+	const struct internal_fork_params ifp_sr_tcp = {
+		.proc_desc = "SIP receiver TCP",
+		.flags = OSS_PROC_DYNAMIC|OSS_PROC_NEEDS_SCRIPT,
+		.type = TYPE_TCP,
+	};
 
 	/* search for free slot in the TCP workers table */
 	for( r=0 ; r<tcp_workers_max_no ; r++ )
@@ -1930,8 +1952,7 @@ static int fork_dynamic_tcp_process(void *foo)
 		return -1;
 	}
 
-	if((p_id=internal_fork("SIP receiver TCP",
-	OSS_PROC_DYNAMIC|OSS_PROC_NEEDS_SCRIPT, TYPE_TCP))<0){
+	if((p_id=internal_fork(&ifp_sr_tcp))<0){
 		LM_ERR("cannot fork dynamic TCP worker process\n");
 		return(-1);
 	}else if (p_id==0){
@@ -1991,7 +2012,7 @@ static void tcp_process_graceful_terminate(int sender, void *param)
 }
 
 
-/* counts the number of TPC processes to start with; this number may 
+/* counts the number of TCP processes to start with; this number may
  * change during runtime due auto-scaling */
 int tcp_count_processes(unsigned int *extra)
 {
@@ -2002,7 +2023,7 @@ int tcp_count_processes(unsigned int *extra)
 
 
 	if (s_profile && extra) {
-		/* how many can be forked over th number of procs to start with ?*/
+		/* how many can be forked over the number of procs to start with ?*/
 		if (s_profile->max_procs > tcp_workers_no)
 			*extra = s_profile->max_procs - tcp_workers_no;
 	}
@@ -2016,6 +2037,11 @@ int tcp_start_processes(int *chd_rank, int *startup_done)
 	int r, n, p_id;
 	int reader_fd[2]; /* for comm. with the tcp workers read  */
 	struct socket_info *si;
+	const struct internal_fork_params ifp_sr_tcp = {
+		.proc_desc = "SIP receiver TCP",
+		.flags = OSS_PROC_NEEDS_SCRIPT,
+		.type = TYPE_TCP,
+	};
 
 	if (tcp_disabled)
 		return 0;
@@ -2048,7 +2074,7 @@ int tcp_start_processes(int *chd_rank, int *startup_done)
 	/* start the TCP workers */
 	for(r=0; r<tcp_workers_no; r++){
 		(*chd_rank)++;
-		p_id=internal_fork("SIP receiver TCP", OSS_PROC_NEEDS_SCRIPT,TYPE_TCP);
+		p_id=internal_fork(&ifp_sr_tcp);
 		if (p_id<0){
 			LM_ERR("fork failed\n");
 			goto error;
@@ -2104,12 +2130,17 @@ error:
 int tcp_start_listener(void)
 {
 	int p_id;
+	const struct internal_fork_params ifp_tcp_main = {
+		.proc_desc = "TCP main",
+		.flags = 0,
+		.type = TYPE_NONE,
+	};
 
 	if (tcp_disabled)
 		return 0;
 
 	/* start the TCP manager process */
-	if ( (p_id=internal_fork( "TCP main", 0, TYPE_NONE))<0 ) {
+	if ( (p_id=internal_fork(&ifp_tcp_main))<0 ) {
 		LM_CRIT("cannot fork tcp main process\n");
 		goto error;
 	}else if (p_id==0){

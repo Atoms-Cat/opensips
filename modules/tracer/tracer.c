@@ -1397,6 +1397,11 @@ static void free_trace_info_shm(void *param, int type)
 	trace_info_unref(info,1);
 }
 
+static void unref_trace_info(void *param)
+{
+	trace_info_unref(param, 1);
+}
+
 static void free_trace_info_tm(void *param)
 {
 	free_trace_info_shm(param, TRACE_TRANSACTION);
@@ -1441,14 +1446,16 @@ static int trace_b2b_transaction(struct sip_msg* msg, void *trans, void* param)
 	/* arm transaction callbacks for futher tracing*/
 
 	if(tmb.register_tmcb( NULL, t, TMCB_MSG_MATCHED_IN,
-	trace_tm_in, info, 0) <=0) {
+	trace_tm_in, info, unref_trace_info) <=0) {
 		LM_ERR("can't register TM MATCH IN callback\n");
 		return -1;
 	}
 
+	trace_info_ref(info, 2);
 	if(tmb.register_tmcb( NULL, t, TMCB_MSG_SENT_OUT,
-	trace_tm_out, info, 0) <=0) {
+	trace_tm_out, info, unref_trace_info) <=0) {
 		LM_ERR("can't register TM SEND OUT callback\n");
+		trace_info_unref(info, 2);
 		return -1;
 	}
 
@@ -1502,18 +1509,19 @@ static int trace_transaction(struct sip_msg* msg, trace_info_p info, int reverse
 	msg->msg_flags |= FL_USE_SIPTRACE;
 
 	if(tmb.register_tmcb( msg, 0, TMCB_MSG_MATCHED_IN,
-	reverse_dir?trace_tm_in_rev:trace_tm_in, info, 0) <=0) {
+	reverse_dir?trace_tm_in_rev:trace_tm_in, info, unref_trace_info) <=0) {
 		LM_ERR("can't register TM MATCH IN callback\n");
 		return -1;
 	}
 
+	trace_info_ref(info, 2);
 	if(tmb.register_tmcb( msg, 0, TMCB_MSG_SENT_OUT,
 	reverse_dir?trace_tm_out_rev:trace_tm_out, info, free_trace_info_tm) <=0) {
 		LM_ERR("can't register TM SEND OUT callback\n");
+		trace_info_unref(info, 2);
 		return -1;
 	}
 
-	trace_info_ref(info,1);
 	return 0;
 }
 
@@ -1812,6 +1820,7 @@ static int sip_trace_handle(struct sip_msg *msg, tlist_elem_p el,
 	trace_info_t stack_info;
 	trace_instance_t stack_instance;
 	trace_instance_p instance=NULL;
+	str s;
 
 	if (trace_attrs != NULL)
 		extra_len += trace_attrs->len;
@@ -1930,7 +1939,13 @@ static int sip_trace_handle(struct sip_msg *msg, tlist_elem_p el,
 		info->instances = instance;
 	}
 
-	if (trace_flags==TRACE_B2B) {
+	if (info->instances->next) {
+		/* this is not the first instance to be added, which means
+		 * we need only to add the instance to the list (already done above).
+		 * All the tracing callbacks are already present (set when the first
+		 * tracing instance was created), so nothing to do from this
+		 * perspective */
+	} else if (trace_flags==TRACE_B2B) {
 		if (trace_b2b(msg, info) < 0) {
 			LM_ERR("trace b2b failed!\n");
 			return -1;
@@ -1956,15 +1971,23 @@ static int sip_trace_handle(struct sip_msg *msg, tlist_elem_p el,
 		info->conn_id = 0;
 	}
 
-	/* trace the current message only if:
-	 *  (a) per-message tracing was requests
-	 *  or
-	 *  (b) we are not in LOCAL route (UAC trans do not have IN msg) */
-	if (trace_flags!=TRACE_B2B &&
-	(trace_flags == TRACE_MESSAGE || route_type != LOCAL_ROUTE)) {
-		if (sip_trace_instance(msg, instance, info->conn_id,TRACE_C_CALLER)<0){
-			LM_ERR("sip trace failed!\n");
-			return -1;
+	/* should we trace the current message ? */
+	if (trace_flags!=TRACE_B2B) {
+		/* if per-message from local route -> trace it as an out REQ !! */
+		if (trace_flags == TRACE_MESSAGE && route_type == LOCAL_ROUTE) {
+			s.s = msg->buf;
+			s.len = msg->len;
+			trace_msg_out( msg, &s, msg->rcv.bind_address, msg->rcv.proto,
+				&tmb.t_gett()->uac[0].request.dst.to, info, TRACE_C_CALLEE);
+		} else
+		/* otherwise trace only if per-message or not in local route
+		 * (UAC trans do not have IN msg) */
+		if (trace_flags == TRACE_MESSAGE || route_type != LOCAL_ROUTE) {
+			if (sip_trace_instance(msg, instance, info->conn_id,
+			TRACE_C_CALLER)<0){
+				LM_ERR("sip trace failed!\n");
+				return -1;
+			}
 		}
 	}
 
@@ -2392,6 +2415,46 @@ static void trace_slack_in(struct sip_msg* req, str *buffer,int rpl_code,
 }
 #endif
 
+static int parse_from_and_callid(struct sip_msg* msg, str *from_tag) {
+	struct to_body from_b;
+	if (msg->msg_flags&FL_SHM_CLONE) {
+		/* this is an in shm-mem cloned msg,
+		 * so do not do direct parsing on it ; keep in mind that the hdrs are
+		 * already parsed/found, so we may need to parse here only
+		 * their body/payload */
+		if (msg->from) {
+			if (get_from(msg)) {
+				*from_tag = get_from(msg)->tag_value;
+			} else {
+				parse_to( msg->from->body.s,
+					msg->from->body.s+msg->from->body.len+1, &from_b);
+				if (from_b.error == PARSE_ERROR) {
+					return -1;
+				} else {
+					*from_tag = from_b.tag_value;
+					free_to_params(&from_b);
+				}
+			}
+		} else {
+			return -2;
+		}
+	} else {
+		if(parse_from_header(msg)==-1||msg->from==NULL||get_from(msg)==NULL)
+		{
+			LM_ERR("cannot parse FROM header\n");
+			return -3;
+		}
+		*from_tag = get_from(msg)->tag_value;
+
+		if(parse_headers(msg, HDR_CALLID_F, 0)!=0)
+		{
+			LM_ERR("cannot parse call-id\n");
+			return -4;
+		}
+	}
+	return 0;
+}
+
 static void trace_msg_out(struct sip_msg* msg, str  *sbuf,
 		struct socket_info* send_sock, int proto, union sockaddr_union *to,
 		trace_info_p info, int leg_flag)
@@ -2400,45 +2463,11 @@ static void trace_msg_out(struct sip_msg* msg, str  *sbuf,
 	static char toip_buff[IP_ADDR_MAX_STR_SIZE+12];
 	struct ip_addr to_ip;
 	trace_instance_p instance;
-	struct to_body from_b;
 	str from_tag;
 
-	if (msg->msg_flags&FL_SHM_CLONE) {
-		/* this is an in shm-mem cloned msg,
-		 * so do not do direct parsing on it ; keep in mind that the hdrs are
-		 * already parsed/found, so we may need to parse here only
-		 * their body/payload */
-		if (msg->from) {
-			if (get_from(msg)) {
-				from_tag = get_from(msg)->tag_value;
-			} else {
-				parse_to( msg->from->body.s,
-					msg->from->body.s+msg->from->body.len+1, &from_b);
-				if (from_b.error == PARSE_ERROR) {
-					from_tag.s = NULL;
-					from_tag.s = 0;
-				} else {
-					from_tag = from_b.tag_value;
-					free_to_params(&from_b);
-				}
-			}
-		} else {
-			from_tag.s = NULL;
-			from_tag.s = 0;
-		}
-	} else {
-		if(parse_from_header(msg)==-1||msg->from==NULL||get_from(msg)==NULL)
-		{
-			LM_ERR("cannot parse FROM header\n");
-			goto error;
-		}
-		from_tag = get_from(msg)->tag_value;
-
-		if(parse_headers(msg, HDR_CALLID_F, 0)!=0)
-		{
-			LM_ERR("cannot parse call-id\n");
-			return;
-		}
+	if(parse_from_and_callid(msg, &from_tag) != 0)
+	{
+		goto error;
 	}
 
 	LM_DBG("trace msg out \n");
@@ -2682,6 +2711,7 @@ static void trace_onreply_out(struct cell* t, int type, struct tmcb_params *ps,
 	char statusbuf[8];
 	str *sbuf;
 	struct dest_info *dst;
+	str from_tag;
 
 	trace_info_t info;
 
@@ -2701,16 +2731,9 @@ static void trace_onreply_out(struct cell* t, int type, struct tmcb_params *ps,
 		faked = 1;
 	}
 
-	if(parse_from_header(msg)==-1 || msg->from==NULL || get_from(msg)==NULL)
+	if(parse_from_and_callid(msg, &from_tag) != 0)
 	{
-		LM_ERR("cannot parse FROM header\n");
 		goto error;
-	}
-
-	if(parse_headers(msg, HDR_CALLID_F, 0)!=0)
-	{
-		LM_ERR("cannot parse call-id\n");
-		return;
 	}
 
 	if(msg->callid==NULL || msg->callid->body.s==NULL)
@@ -2807,8 +2830,7 @@ static void trace_onreply_out(struct cell* t, int type, struct tmcb_params *ps,
 
 	db_vals[11].val.string_val = "out";
 
-	db_vals[12].val.str_val.s = get_from(msg)->tag_value.s;
-	db_vals[12].val.str_val.len = get_from(msg)->tag_value.len;
+	db_vals[12].val.str_val = from_tag;
 
 	for (instance = info.instances; instance; instance = instance->next) {
 		if ( trace_check_legs( instance, leg_flag)) {

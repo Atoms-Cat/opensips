@@ -25,6 +25,7 @@
 #include "../../pt.h"
 #include "../../lib/list.h"
 #include "../../mem/mem_funcs.h"
+#include "../../mem/shm_mem.h"
 #include "../../lib/osips_malloc.h"
 
 #include "test_malloc.h"
@@ -49,7 +50,7 @@ static osips_free_t    FREE;
 #define HPT_OPS             100000
 
 static unsigned int pkg_frag_overhead;
-static unsigned int shm_frag_overhead;
+int shm_frag_overhead __attribute__((weak));
 
 static long hpt_my_used = 0;
 static long mallocs, reallocs, frees;
@@ -176,13 +177,23 @@ static void hpt_free(unsigned int frag_overhead)
 static void _test_malloc(int procs, unsigned int frag_overhead)
 {
 	int i;
-	int my_pid = 0;
+	int my_pid = 0, child_pid;
 
 	update_stat(workers, +1);
 
 	for (i = 1; i < procs; i++) {
 		update_stat(workers, +1);
-		if (internal_fork("malloc test", OSS_PROC_NO_IPC|OSS_PROC_NO_LOAD, TYPE_NONE) == 0) {
+		const struct internal_fork_params ifp_th = {
+			.proc_desc = "malloc test",
+			.flags = OSS_PROC_NO_IPC|OSS_PROC_NO_LOAD,
+			.type = TYPE_NONE,
+		};
+
+		child_pid = internal_fork(&ifp_th);
+		if (child_pid < 0)
+			exit(-1);
+
+		if (child_pid == 0) {
 			my_pid = i;
 			printf("forked extra test worker #%d!\n", i);
 			break;

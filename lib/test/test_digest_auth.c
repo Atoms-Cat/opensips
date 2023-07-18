@@ -29,9 +29,6 @@
 #include "../../lib/digest_auth/dauth_calc.h"
 #include "../../lib/digest_auth/dauth_hexops.h"
 
-// not fully functional yet: also see TODO from Makefile.test
-#if 0
-
 static const struct digest_auth_credential crd = {
 	.realm = str_init("opensips.org"),
 	.user = str_init("opensips"),
@@ -107,4 +104,3 @@ void test_lib_digest_auth(void)
 {
 	test_digest_auth_sha256();
 }
-#endif
