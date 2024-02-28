@@ -1505,7 +1505,7 @@ assign_stm: LOGLEVEL EQUAL snumber { IFOR();
 		 }
 		| TOS EQUAL error { yyerror("number expected"); }
 		| MPATH EQUAL STRING {IFOR();
-				set_mpath($3); }
+				add_mpath($3); }
 		| MPATH EQUAL error  { yyerror("string value expected"); }
 		| DISABLE_DNS_FAILOVER EQUAL NUMBER { IFOR();
 										disable_dns_failover=$3;
@@ -1997,13 +1997,6 @@ assign_cmd: script_var assignop assignexp {
 	|  script_var COLONEQ NULLV {
 			if(!pv_is_w($1))
 				yyerror("invalid left operand in assignment");
-			/* not all can get NULL with := */
-			switch($1->type) {
-				case PVT_AVP:
-				break;
-				default:
-					yyerror("invalid left operand in NULL assignment");
-			}
 			if($1->trans!=0)
 				yyerror("transformations not accepted in left side "
 					"of assignment");

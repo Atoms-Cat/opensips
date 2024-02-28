@@ -1,4 +1,5 @@
 /*
+ * Copyright (C) 2008-2024 OpenSIPS Solutions
  * Copyright (C) 2004-2006 Voice Sistem SRL
  *
  * This file is part of Open SIP Server (opensips).
@@ -15,18 +16,14 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301,USA
  *
- * History:
- * ---------
- *  2004-10-04  first version (ramona)
- *  2004-11-11  added support for db schemes for avp_db_load (ramona)
  */
 
 
 
-#ifndef _AVP_OPS_DB_H_
-#define _AVP_OPS_DB_H_
+#ifndef _DB_OPS_DB_H_
+#define _DB_OPS_DB_H_
 
 #include "../../db/db.h"
 #include "../../parser/msg_parser.h"
@@ -64,29 +61,29 @@ struct db_url* get_db_url(unsigned int idx);
 
 struct db_url* get_default_db_url(void);
 
-int avpops_db_bind(void);
+int dbops_db_bind(void);
 
-int avpops_db_init(const str* db_table, str **db_columns);
+int dbops_db_init(const str* db_table, str **db_columns);
 
-db_res_t *db_load_avp(struct db_url *url,str *uuid, str *username, str *domain,
+db_res_t *db_avp_load(struct db_url *url,str *uuid, str *username, str *domain,
 		char *attr, const str *table, struct db_scheme *scheme);
 
 void db_close_query( struct db_url *url, db_res_t *res );
 
-int db_store_avp( struct db_url *url, db_key_t *keys, db_val_t *vals,
+int db_avp_store( struct db_url *url, db_key_t *keys, db_val_t *vals,
 		int n, const str *table);
 
-int db_delete_avp( struct db_url *url, str *uuid, str *username, str *domain,
+int db_avp_delete( struct db_url *url, str *uuid, str *username, str *domain,
 		char *attr, const str *table);
 
-int db_query_avp(struct db_url *url, struct sip_msg* msg, str *query,
+int db_query(struct db_url *url, struct sip_msg* msg, str *query,
 		pvname_list_t* dest);
 
-int avp_add_db_scheme( modparam_t type, void* val);
+int add_avp_db_scheme( modparam_t type, void* val);
 
-struct db_scheme *avp_get_db_scheme( str *name );
+struct db_scheme *get_avp_db_scheme( str *name );
 
-int db_query_avp_print_results(struct sip_msg *msg, const db_res_t *db_res,
+int db_query_print_results(struct sip_msg *msg, const db_res_t *db_res,
 								pvname_list_t *dest);
 
 #endif

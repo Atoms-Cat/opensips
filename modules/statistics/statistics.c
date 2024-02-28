@@ -178,7 +178,7 @@ static const param_export_t mod_params[]={
 
 
 static const pv_export_t mod_items[] = {
-	{ {"stat",     sizeof("stat")-1},      1100, pv_get_stat,
+	{ str_const_init("stat"),      1100, pv_get_stat,
 		pv_set_stat,    pv_parse_name, 0, 0, 0},
 	{ {0, 0}, 0, 0, 0, 0, 0, 0, 0 }
 };
@@ -1002,7 +1002,17 @@ end:
 
 static struct stat_series *new_stat_series(struct stat_series_profile *profile, str *name)
 {
-	struct stat_series *ss = shm_malloc(sizeof *ss + name->len + 1 +
+	struct stat_series *ss;
+
+	/* we should first check whether there is an overlapping statistic with
+	 * this name, since we are not allowed to have that
+	 */
+	if (get_stat(name)) {
+		LM_DBG("%.*s stat already exists!\n", name->len, name->s);
+		return NULL;
+	}
+
+	ss = shm_malloc(sizeof *ss + name->len + 1 +
 			profile->slots * sizeof (*ss->slots));
 	if (!ss) {
 		LM_ERR("could not allocate new stat series!\n");

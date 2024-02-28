@@ -23,6 +23,7 @@
 #include "../../pt.h"
 #include "dlg_vals.h"
 #include "dlg_hash.h"
+#include "dlg_replication.h"
 
 
 
@@ -133,6 +134,9 @@ int store_dlg_value(struct dlg_cell *dlg, str *name, int_str *val, int type)
 	lock_start_write(dlg->vals_lock);
 	ret = store_dlg_value_unsafe(dlg,name,val,type);
 	lock_stop_write(dlg->vals_lock);
+
+	if (ret == 0 && dlg->state >= DLG_STATE_CONFIRMED && dialog_repl_cluster)
+		replicate_dialog_value(dlg, name, val, type);
 
 	return ret;
 }
@@ -366,6 +370,7 @@ int pv_get_dlg_val(struct sip_msg *msg,  pv_param_t *param, pv_value_t *res)
 	isval.s = param->pvv;
 	if (fetch_dlg_value(dlg, &param->pvn.u.isname.name.s, &type, &isval, 1)!=0)
 		return pv_get_null(msg, param, res);
+	param->pvv = isval.s;
 
 	if (type == DLG_VAL_TYPE_STR) {
 		res->flags = PV_VAL_STR;

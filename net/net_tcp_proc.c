@@ -247,8 +247,8 @@ again:
 			}
 
 			if (!(con->flags & F_CONN_INIT)) {
-				if (protos[con->type].net.conn_init &&
-						protos[con->type].net.conn_init(con) < 0) {
+				if (protos[con->type].net.stream.conn.init &&
+						protos[con->type].net.stream.conn.init(con) < 0) {
 					LM_ERR("failed to do proto %d specific init for conn %p\n",
 							con->type, con);
 					goto con_error;
@@ -294,7 +294,7 @@ again:
 				LM_DBG("Received con for async write %p ref = %d\n",
 					con, con->refcnt);
 				lock_get(&con->write_lock);
-				resp = protos[con->type].net.write( (void*)con, s );
+				resp = protos[con->type].net.stream.write( con, s );
 				lock_release(&con->write_lock);
 				if (resp<0) {
 					ret=-1; /* some error occurred */
@@ -303,6 +303,7 @@ again:
 						"handle write, err, state: %d, att: %d",
 						con->state, con->msg_attempts);
 					tcpconn_release_error(con, 1,"Write error");
+					close(s); /* we always close the socket received for writing */
 					break;
 				} else if (resp==1) {
 					sh_log(con->hist, TCP_SEND2MAIN,
@@ -326,7 +327,7 @@ again:
 			if (event_type & IO_WATCH_READ) {
 				con=(struct tcp_connection*)fm->data;
 				_tcp_done_reading_marker = 0;
-				resp = protos[con->type].net.read( (void*)con, &ret );
+				resp = protos[con->type].net.stream.read( con, &ret );
 				if (resp<0) {
 					ret=-1; /* some error occurred */
 					con->state=S_CONN_BAD;

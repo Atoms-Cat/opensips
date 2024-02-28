@@ -654,9 +654,9 @@ static const dep_export_t deps = {
  * pseudo-variables
  */
 static const pv_export_t mod_items[] = {
-	{{"hep_net", sizeof("hep_net")-1}, 1201, pv_get_hep_net, 0,
+	{str_const_init("hep_net"), 1201, pv_get_hep_net, 0,
 		pv_parse_hep_net_name, 0, 0, 0},
-	{{"HEPVERSION", sizeof("HEPVERSION")-1}, 1202, pv_get_hep_version, 0,
+	{str_const_init("HEPVERSION"), 1202, pv_get_hep_version, 0,
 		0, 0, 0, 0},
 	{{0, 0}, 0, 0, 0, 0, 0, 0, 0}
 };
@@ -4250,7 +4250,7 @@ static int w_hep_relay(struct sip_msg *msg)
 	struct proxy_l* proxy;
 	struct sip_uri uri;
 
-	struct socket_info* send_sock;
+	const struct socket_info* send_sock;
 
 	union sockaddr_union to;
 
@@ -4295,6 +4295,12 @@ static int w_hep_relay(struct sip_msg *msg)
 			return -1;
 		}
 		hep_proto = PROTO_HEP_TCP;
+	} else if (uri.proto == PROTO_TLS) {
+		if (hep_version == 1 || hep_version == 2) {
+			LM_ERR("TLS not supported for HEPv%d\n", hep_version);
+			return -1;
+		}
+		hep_proto = PROTO_HEP_TLS;
 	} else {
 		LM_ERR("cannot send hep with proto %s\n",
 					proto2str(uri.proto, proto_buf));

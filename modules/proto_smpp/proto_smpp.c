@@ -59,8 +59,8 @@ static int mod_init(void);
 static int child_init(int rank);
 static int smpp_init(struct proto_info *pi);
 static int smpp_init_listener(struct socket_info *si);
-static int smpp_send(struct socket_info* send_sock,
-		char* buf, unsigned int len, union sockaddr_union* to,
+static int smpp_send(const struct socket_info* send_sock,
+		char* buf, unsigned int len, const union sockaddr_union* to,
 		unsigned int id);
 static int smpp_read_req(struct tcp_connection* conn, int* bytes_read);
 static int smpp_write_async_req(struct tcp_connection* con,int fd);
@@ -144,11 +144,11 @@ static int smpp_init(struct proto_info *pi)
 	pi->tran.dst_attr	= tcp_conn_fcntl;
 
 	pi->net.flags		= PROTO_NET_USE_TCP;
-	pi->net.read		= (proto_net_read_f)smpp_read_req;
-	pi->net.write		= (proto_net_write_f)smpp_write_async_req;
+	pi->net.stream.read	= smpp_read_req;
+	pi->net.stream.write	= smpp_write_async_req;
 
-	pi->net.conn_init	= smpp_conn_init;
-	pi->net.conn_clean	= smpp_conn_clean;
+	pi->net.stream.conn.init  = smpp_conn_init;
+	pi->net.stream.conn.clean = smpp_conn_clean;
 
 	return 0;
 }
@@ -229,8 +229,8 @@ static int smpp_init_listener(struct socket_info *si)
 	return tcp_init_listener(si);
 }
 
-static int smpp_send(struct socket_info* send_sock,
-		char* buf, unsigned int len, union sockaddr_union* to,
+static int smpp_send(const struct socket_info* send_sock,
+		char* buf, unsigned int len, const union sockaddr_union* to,
 		unsigned int id)
 {
 	LM_INFO("smpp_send called\n");
@@ -279,7 +279,8 @@ static int smpp_handle_req(struct tcp_req *req, struct tcp_connection *con)
 		if (!size && req != &smpp_current_req) {
 			/* if we no longer need this tcp_req
 			 * we can free it now */
-			pkg_free(req);
+			shm_free(req);
+			con->con_req = NULL;
 		}
 
 		con->msg_attempts = 0;
@@ -307,7 +308,7 @@ static int smpp_handle_req(struct tcp_req *req, struct tcp_connection *con)
 			/* let's duplicate this - most likely another conn will come in */
 
 			LM_DBG("We didn't manage to read a full request\n");
-			con->con_req = pkg_malloc(sizeof(struct tcp_req));
+			con->con_req = shm_malloc(sizeof(struct tcp_req));
 			if (con->con_req == NULL) {
 				LM_ERR("No more mem for dynamic con request buffer\n");
 				return -1;

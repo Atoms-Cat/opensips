@@ -53,6 +53,8 @@
 	__FD_CHECK_GT((__call__), (__retok__), out)
 #define FD_CHECK_GT(__call__) _FD_CHECK_GT((__call__), 0)
 
+/* Note: if you get a EEXIST (-17) error code while adding an AVP, the error
+   signifies a data conflict, since duplicate additions are allowed (rc: 0) */
 #define FD_CHECK_dict_new(type, data, parent, ref) \
 	FD_CHECK(fd_dict_new(fd_g_config->cnf_dict, (type), \
 				(data), (parent), (ref)))
@@ -87,8 +89,9 @@ struct _dm_dict {
 struct dm_message {
 	aaa_message *am; /* back-reference, useful during cleanup */
 
-	unsigned int app_id;   /* these are used when sending */
+	unsigned int app_id;   /* these two are used when sending */
 	unsigned int cmd_code; /* custom Diameter requests */
+	void *fd_req;
 
 	str sip_method;
 	struct dm_cond *reply_cond; /* the cond to signal on reply arrival */
@@ -112,9 +115,21 @@ struct dm_avp {
 	struct list_head list;
 };
 
+#define DM_TYPE_COND (1<<0)
+#define DM_TYPE_EVENT (1<<1)
+
 struct dm_cond {
-	pthread_mutex_t mutex;
-	pthread_cond_t cond;
+	int type;
+	union {
+		struct {
+			pthread_mutex_t mutex;
+			pthread_cond_t cond;
+		} cond;
+		struct {
+			int fd;
+			int pid;
+		} event;
+	} sync;
 
 	int rc; /* the Diameter Result-Code AVP value */
 	int is_error;
@@ -122,10 +137,14 @@ struct dm_cond {
 };
 int init_mutex_cond(pthread_mutex_t *mutex, pthread_cond_t *cond);
 
+extern struct list_head dm_unreplied_req;
+extern gen_lock_t dm_unreplied_req_lk;
+extern unsigned int dm_unreplied_req_timeout;
 extern char *dm_conf_filename;
 extern char *extra_avps_file;
 extern struct _dm_dict dm_dict;
 extern int dm_answer_timeout;
+int dm_remove_unreplied_req(struct msg *req);
 
 int freeDiameter_init(void);
 
@@ -138,13 +157,15 @@ int dm_register_callbacks(void);
 int dm_find(aaa_conn *_, aaa_map *map, int op);
 aaa_message *dm_create_message(aaa_conn *_, int msg_type);
 aaa_message *_dm_create_message(aaa_conn *_, int msg_type,
-        unsigned int app_id, unsigned int cmd_code);
+        unsigned int app_id, unsigned int cmd_code, void *fd_req);
 int dm_avp_add(aaa_conn *_, aaa_message *msg, aaa_map *avp, void *val,
                int val_length, int vendor);
 int dm_build_avps(struct list_head *subavps, cJSON *array);
 int dm_send_message(aaa_conn *_, aaa_message *req, aaa_message **__);
 int _dm_send_message(aaa_conn *_, aaa_message *req, aaa_message **reply,
                char **rpl_avps);
+int _dm_send_message_async(aaa_conn *_, aaa_message *req, int *fd);
+int _dm_get_message_response(struct dm_cond *cond, char **rpl_avps);
 int dm_destroy_message(aaa_conn *con, aaa_message *msg);
 void _dm_destroy_message(aaa_message *msg);
 

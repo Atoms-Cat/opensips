@@ -377,24 +377,24 @@ static const stat_export_t mod_stats[] = {
  * pseudo-variables exported by TM module
  */
 static const pv_export_t mod_items[] = {
-	{ {"T_branch_idx", sizeof("T_branch_idx")-1}, 900,
+	{ str_const_init("T_branch_idx"), 900,
 		pv_get_tm_branch_idx, NULL, NULL, NULL, NULL, 0 },
-	{ {"T_reply_code", sizeof("T_reply_code")-1}, 901,
+	{ str_const_init("T_reply_code"), 901,
 		pv_get_tm_reply_code, NULL, NULL, NULL, NULL, 0 },
-	{ {"T_ruri",       sizeof("T_ruri")-1},       902,
+	{ str_const_init("T_ruri"),       902,
 		pv_get_tm_ruri,       NULL, NULL, NULL, NULL, 0 },
-	{ {"bavp",         sizeof("bavp")-1},         903,
+	{ str_const_init("bavp"),         903,
 		pv_get_tm_branch_avp, pv_set_tm_branch_avp,
 		pv_parse_avp_name, pv_parse_index, NULL, 0 },
-	{ {"T_fr_timeout", sizeof("T_fr_timeout")-1}, 904,
+	{ str_const_init("T_fr_timeout"), 904,
 		pv_get_tm_fr_timeout, pv_set_tm_fr_timeout,
 		NULL, NULL, NULL, 0 },
-	{ {"T_fr_inv_timeout", sizeof("T_fr_inv_timeout")-1}, 905,
+	{ str_const_init("T_fr_inv_timeout"), 905,
 		pv_get_tm_fr_inv_timeout, pv_set_tm_fr_inv_timeout,
 		NULL, NULL, NULL, 0 },
-	{ {"T_id",         sizeof("T_id")-1},         906,
+	{ str_const_init("T_id"),         906,
 		pv_get_t_id, NULL, NULL, NULL, NULL, 0 },
-	{ {"T_branch_last_reply_code", sizeof("T_branch_last_reply_code")-1}, 907,
+	{ str_const_init("T_branch_last_reply_code"), 907,
 		pv_get_tm_branch_reply_code, NULL,
 		NULL, pv_parse_index, NULL, 0 },
 	{ {0, 0}, 0, 0, 0, 0, 0, 0, 0 }
@@ -688,7 +688,7 @@ int load_tm( struct tm_binds *tmb)
 	tmb->register_tmcb = register_tmcb;
 
 	/* relay function */
-	tmb->t_relay = (cmd_function)w_t_relay;
+	tmb->t_relay = w_t_relay;
 
 	/* reply functions */
 	tmb->t_reply = (treply_f)w_t_reply;
@@ -698,10 +698,11 @@ int load_tm( struct tm_binds *tmb)
 	/* transaction location/status functions */
 	tmb->t_newtran = w_t_newtran;
 	tmb->t_is_local = t_is_local;
-	tmb->t_check_trans = (cmd_function)t_check_trans;
+	tmb->t_check_trans = t_check_trans;
 	tmb->t_get_trans_ident = t_get_trans_ident;
 	tmb->t_lookup_ident = t_lookup_ident;
 	tmb->t_gett = get_t;
+	tmb->t_sett = set_t;
 	tmb->t_get_e2eackt = get_e2eack_t;
 	tmb->t_get_picked = t_get_picked_branch;
 	tmb->t_set_remote_t = t_set_remote_t;
@@ -1695,7 +1696,8 @@ static int pv_get_tm_branch_idx(struct sip_msg *msg, pv_param_t *param,
 	if(msg==NULL || res==NULL)
 		return -1;
 
-	if (route_type!=BRANCH_ROUTE && route_type!=ONREPLY_ROUTE) {
+	if (route_type!=BRANCH_ROUTE && route_type!=ONREPLY_ROUTE &&
+	route_type!=FAILURE_ROUTE) {
 		res->flags = PV_VAL_NULL;
 		return 0;
 	}
@@ -1994,7 +1996,8 @@ int pv_get_tm_branch_avp(struct sip_msg *msg, pv_param_t *param,
 			val->ri = avp_value.n;
 			val->flags |= PV_VAL_INT|PV_TYPE_INT;
 		}
-	}
+	} else
+		pv_get_null(msg, param, val);
 
 	goto success;
 

@@ -186,39 +186,98 @@ static inline int add_dlg_rr_param(struct sip_msg *req, struct dlg_cell *dlg)
 	return 0;
 }
 
+static void tmcb_remove_cseq_map(struct cell* t, int type,
+		struct tmcb_params *param)
+{
+	struct dlg_leg_cseq_map *prev, *it, *map = *param->param;
+	struct dlg_cell *dlg = map->dlg;
+	LM_DBG("removing [%u]->[%u] from leg [%d]\n", map->msg, map->gen, map->leg);
+	dlg_lock_dlg(dlg);
+	for (prev = NULL, it = dlg->legs[map->leg].cseq_maps; it; it = it->next) {
+		if (it == map)
+			break;
+		prev = it;
+	}
+	if (it) {
+		if (prev)
+			prev->next = map->next;
+		else
+			dlg->legs[map->leg].cseq_maps = map->next;
+		shm_free(map);
+	} else {
+		LM_WARN("mapping [%u]->[%u] for leg [%d] not found!\n", map->msg, map->gen, map->leg);
+	}
+	dlg_unlock_dlg(dlg);
+	unref_dlg(dlg, 1);
+}
 
-static void dlg_leg_push_cseq_map(struct dlg_cell *dlg, unsigned int leg,
+static void dlg_leg_push_cseq_map(struct dlg_cell *dlg, struct cell *t, unsigned int leg,
 	struct sip_msg *msg)
 {
 	struct dlg_leg_cseq_map *map;
-	unsigned int msg_cseq;
+	unsigned int msg_cseq, gen_cseq;
+
+	if (!t || t == T_UNDEFINED) {
+		LM_ERR("unknown transaction to keep maps on\n");
+		return;
+	}
 
 	if((!msg->cseq && (parse_headers(msg,HDR_CSEQ_F,0)<0 || !msg->cseq)) ||
 		!msg->cseq->parsed){
 		LM_ERR("bad sip message or missing CSeq hdr :-/\n");
 		return;
 	}
-	if (str2int(&get_cseq(msg)->number, &msg_cseq) < 0) {
-		LM_ERR("invalid CSeq number [%.*s]\n",
+	if (str2int(&get_cseq(msg)->number, &gen_cseq) < 0) {
+		LM_ERR("invalid generated CSeq number [%.*s]\n",
 				get_cseq(msg)->number.len, get_cseq(msg)->number.s);
 		return;
 	}
+	if (!t->uas.request || !t->uas.request->cseq || !t->uas.request->cseq->parsed) {
+		LM_ERR("bad sip message or missing CSeq hdr in transaction :-/\n");
+		return;
+	}
+	if (str2int(&get_cseq(t->uas.request)->number, &msg_cseq) < 0) {
+		LM_ERR("invalid transaction CSeq number [%.*s]\n",
+				get_cseq(t->uas.request)->number.len, get_cseq(t->uas.request)->number.s);
+		return;
+	}
+	/* check if there is already a mapping for this request */
+	dlg_lock_dlg(dlg);
+	for (map = dlg->legs[leg].cseq_maps; map; map = map->next)
+		if (map->msg == msg_cseq)
+			break;
+	if (map) {
+		LM_DBG("updating cseq [%u]->[%u] to [%u]->[%u] for leg [%d]\n",
+				map->msg, map->gen, msg_cseq, gen_cseq, leg);
+		map->gen = gen_cseq;
+		dlg_unlock_dlg(dlg);
+		return;
+	}
+	dlg_unlock_dlg(dlg);
+
 	map = shm_malloc(sizeof *map);
 	if (!map) {
 		LM_ERR("oom for cseq map\n");
 		return;
 	}
 	memset(map, 0, sizeof *map);
+	map->dlg = dlg;
+	map->leg = leg;
 	map->msg = msg_cseq;
-	if (dlg->legs[leg].last_gen_cseq) {
-		map->gen = dlg->legs[leg].last_gen_cseq;
-		LM_DBG("storing cseq [%d] in slot [%d] for leg [%d] from last_gen_cseq\n", map->gen, msg_cseq, leg);
-	} else {
-		map->gen = msg_cseq;
-		LM_DBG("storing cseq [%d] in slot [%d] for leg [%d] from msg\n", map->gen, msg_cseq, leg);
+	map->gen = gen_cseq;
+	LM_DBG("storing cseq [%u]->[%u] for leg [%d]\n", map->msg, map->gen, leg);
+	if (d_tmb.register_tmcb(NULL, t, TMCB_TRANS_DELETED, tmcb_remove_cseq_map, map, NULL) < 0) {
+		LM_ERR("failed to register TMCB free func\n");
+		shm_free(map);
+		return;
 	}
+	/* update the mapping in case anything happens upstream (i.e. the
+	 * re-INVITE is authenticated */
+	dlg_lock_dlg(dlg);
+	ref_dlg_unsafe(dlg, 1);
 	map->next = dlg->legs[leg].cseq_maps;
 	dlg->legs[leg].cseq_maps = map;
+	dlg_unlock_dlg(dlg);
 }
 
 
@@ -585,7 +644,7 @@ static void dlg_onreply(struct cell* t, int type, struct tmcb_params *param)
 		}
 		/* The state does not change, but the msg is mutable in this callback*/
 		run_dlg_callbacks(DLGCB_RESPONSE_FWDED, dlg, rpl,
-			DLG_DIR_UPSTREAM, (void *)leg_idx, 0, 1);
+			DLG_DIR_UPSTREAM, DLG_CALLER_LEG, (void *)leg_idx, 0, 1);
 		return;
 	}
 	if (type==TMCB_TRANS_CANCELLED) {
@@ -649,7 +708,8 @@ static void dlg_onreply(struct cell* t, int type, struct tmcb_params *param)
 	               &unref, DLG_CALLER_LEG, 1);
 
 	if (new_state==DLG_STATE_EARLY && old_state!=DLG_STATE_EARLY) {
-		run_dlg_callbacks(DLGCB_EARLY, dlg, rpl, DLG_DIR_UPSTREAM, NULL, 0, 1);
+		run_dlg_callbacks(DLGCB_EARLY, dlg, rpl, DLG_DIR_UPSTREAM,
+				DLG_CALLER_LEG, NULL, 0, 1);
 		if_update_stat(dlg_enable_stats, early_dlgs, 1);
 		return;
 	}
@@ -701,7 +761,7 @@ static void dlg_onreply(struct cell* t, int type, struct tmcb_params *param)
 
 		/* dialog confirmed */
 		run_dlg_callbacks(DLGCB_CONFIRMED, dlg, rpl, DLG_DIR_UPSTREAM,
-			NULL, 0, 1);
+				DLG_CALLER_LEG, NULL, 0, 1);
 
 		if (ref_script_route_check_and_update(dlg->rt_on_answer)) {
 			run_dlg_script_route( dlg, dlg->rt_on_answer->idx);
@@ -727,7 +787,8 @@ static void dlg_onreply(struct cell* t, int type, struct tmcb_params *param)
 
 		/* dialog setup not completed (3456XX), but there is still a bit of
 		 * room to go *back* to 2XX if we're racing against a 200 OK! */
-		run_dlg_callbacks(DLGCB_FAILED, dlg, rpl, DLG_DIR_UPSTREAM, NULL, 0, 1);
+		run_dlg_callbacks(DLGCB_FAILED, dlg, rpl, DLG_DIR_UPSTREAM,
+				DLG_CALLER_LEG, NULL, 0, 1);
 
 		/* do unref */
 		if (unref)
@@ -981,7 +1042,7 @@ static void dlg_update_caller_sdp(struct cell* t, int type,
 static void dlg_update_caller_rpl_contact(struct cell* t, int type,
 		struct tmcb_params *ps)
 {
-	struct sip_msg *req, *rpl;
+	struct sip_msg *rpl;
 	int statuscode;
 	struct dlg_cell *dlg;
 
@@ -994,7 +1055,6 @@ static void dlg_update_caller_rpl_contact(struct cell* t, int type,
 			return;
 	}
 
-	req = ps->req;
 	rpl = ps->rpl;
 	statuscode = ps->code;
 	dlg = *(ps->param);
@@ -1006,13 +1066,9 @@ static void dlg_update_caller_rpl_contact(struct cell* t, int type,
 
 	LM_DBG("Status Code received =  [%d]\n", statuscode);
 
-	if (statuscode == 401 || statuscode ==407) {
+	if ((statuscode == 401 || statuscode == 407) && dlg->legs[DLG_CALLER_LEG].last_gen_cseq) {
 		dlg->legs[DLG_CALLER_LEG].last_gen_cseq++;
 		LM_DBG("incrementing last_gen_cseq to [%d] for leg[%d]\n", dlg->legs[DLG_CALLER_LEG].last_gen_cseq, DLG_CALLER_LEG);
-	}
-	if (get_cseq(req)->method_id == METHOD_INVITE) {
-		LM_DBG("dlg_leg_push_cseq_map(dlg, [%d], INVITE)\n", DLG_CALLER_LEG);
-		dlg_leg_push_cseq_map(dlg, DLG_CALLER_LEG, req);
 	}
 
 	if (statuscode >= 200 && statuscode < 300)
@@ -1022,7 +1078,7 @@ static void dlg_update_caller_rpl_contact(struct cell* t, int type,
 static void dlg_update_callee_rpl_contact(struct cell* t, int type,
 		struct tmcb_params *ps)
 {
-	struct sip_msg *req, *rpl;
+	struct sip_msg *rpl;
 	int statuscode;
 	struct dlg_cell *dlg;
 
@@ -1035,7 +1091,6 @@ static void dlg_update_callee_rpl_contact(struct cell* t, int type,
 			return;
 	}
 
-	req = ps->req;
 	rpl = ps->rpl;
 	statuscode = ps->code;
 	dlg = *(ps->param);
@@ -1047,9 +1102,9 @@ static void dlg_update_callee_rpl_contact(struct cell* t, int type,
 
 	LM_DBG("Status Code received =  [%d]\n", statuscode);
 
-	if (get_cseq(req)->method_id == METHOD_INVITE) {
-		LM_DBG("dlg_leg_push_cseq_map(dlg, [%d], INVITE)\n", callee_idx(dlg));
-		dlg_leg_push_cseq_map(dlg, callee_idx(dlg), req);
+	if ((statuscode == 401 || statuscode == 407) && dlg->legs[callee_idx(dlg)].last_gen_cseq) {
+		dlg->legs[callee_idx(dlg)].last_gen_cseq++;
+		LM_DBG("incrementing last_gen_cseq to [%d] for leg[%d]\n", dlg->legs[callee_idx(dlg)].last_gen_cseq, callee_idx(dlg));
 	}
 
 	if (statuscode >= 200 && statuscode < 300)
@@ -1074,7 +1129,7 @@ static void dlg_seq_up_onreply_mod_cseq(struct cell* t, int type,
 	if (type==TMCB_RESPONSE_FWDED &&
 			(dlg->cbs.types)&DLGCB_RESPONSE_WITHIN) {
 		run_dlg_callbacks(DLGCB_RESPONSE_WITHIN, dlg, param->rpl,
-			DLG_DIR_UPSTREAM, NULL, 0, 1);
+			DLG_DIR_UPSTREAM, ((dlg_cseq_wrapper *)*param->param)->dst_leg, NULL, 0, 1);
 		return;
 	}
 
@@ -1093,7 +1148,7 @@ static void dlg_seq_up_onreply(struct cell* t, int type,
 	if (type==TMCB_RESPONSE_FWDED &&
 			(dlg->cbs.types)&DLGCB_RESPONSE_WITHIN) {
 		run_dlg_callbacks(DLGCB_RESPONSE_WITHIN, dlg, param->rpl,
-			DLG_DIR_UPSTREAM, NULL, 0, 1);
+			DLG_DIR_UPSTREAM, DLG_CALLER_LEG, NULL, 0, 1);
 		return;
 	}
 
@@ -1118,7 +1173,7 @@ static void dlg_seq_down_onreply_mod_cseq(struct cell* t, int type,
 	if (type==TMCB_RESPONSE_FWDED &&
 		(dlg->cbs.types)&DLGCB_RESPONSE_WITHIN) {
 		run_dlg_callbacks(DLGCB_RESPONSE_WITHIN, dlg, param->rpl,
-			DLG_DIR_DOWNSTREAM, NULL, 0, 1);
+			DLG_DIR_DOWNSTREAM, ((dlg_cseq_wrapper *)*param->param)->dst_leg, NULL, 0, 1);
 		return;
 	}
 
@@ -1157,7 +1212,7 @@ static void dlg_seq_down_onreply(struct cell* t, int type,
 	if (type==TMCB_RESPONSE_FWDED &&
 		(dlg->cbs.types)&DLGCB_RESPONSE_WITHIN) {
 		run_dlg_callbacks(DLGCB_RESPONSE_WITHIN, dlg, param->rpl,
-			DLG_DIR_DOWNSTREAM, NULL, 0, 1);
+			DLG_DIR_DOWNSTREAM, callee_idx(dlg), NULL, 0, 1);
 		return;
 	}
 
@@ -1298,6 +1353,8 @@ static void dlg_caller_reinv_onreq_out(struct cell* t, int type, struct tmcb_par
 	/* we use the initial request, which already has the contact parsed/fixed */
 	dlg_update_contact(dlg, ps->req, DLG_CALLER_LEG);
 	dlg_update_out_sdp(dlg, DLG_CALLER_LEG, callee_idx(dlg), msg, 1);
+	if (is_invite(t))
+		dlg_leg_push_cseq_map(dlg, t, DLG_CALLER_LEG, msg);
 	free_sip_msg(msg);
 	pkg_free(msg);
 }
@@ -1330,9 +1387,12 @@ static void dlg_callee_reinv_onreq_out(struct cell* t, int type, struct tmcb_par
 
 	dlg_update_contact(dlg, ps->req, callee_idx(dlg));
 	dlg_update_out_sdp(dlg, callee_idx(dlg), DLG_CALLER_LEG, msg, 1);
+	if (is_invite(t))
+		dlg_leg_push_cseq_map(dlg, t, callee_idx(dlg), msg);
 	free_sip_msg(msg);
 	pkg_free(msg);
 }
+
 
 static void dlg_set_tm_dialog_ctx(struct dlg_cell *dlg, struct cell *t)
 {
@@ -1820,9 +1880,8 @@ end:
 static unsigned int dlg_leg_get_cseq(struct dlg_cell *dlg, unsigned int leg,
 		struct sip_msg *msg)
 {
-	struct dlg_leg_cseq_map *map, *tmp;
+	struct dlg_leg_cseq_map *map;
 	unsigned int msg_cseq;
-	int distance = 10;
 
 	if((!msg->cseq && (parse_headers(msg,HDR_CSEQ_F,0)<0 || !msg->cseq)) ||
 		!msg->cseq->parsed){
@@ -1837,20 +1896,8 @@ static unsigned int dlg_leg_get_cseq(struct dlg_cell *dlg, unsigned int leg,
 	for (map = dlg->legs[leg].cseq_maps; map; map = map->next) {
 		if (map->msg != msg_cseq)
 			continue;
-		msg_cseq = map->gen; /* value to be returned */
-		/* cleanup older values, since they are no longer needed */
-		for (tmp = map, map = map->next; map && distance > 0;
-				tmp = map, map = map->next, distance--);
-		if (map) {
-			tmp->next = NULL;
-			do {
-				tmp = map;
-				map = map->next;
-				shm_free(tmp);
-			} while (map);
-		}
-		LM_DBG("found cseq [%d] in map for leg [%d]\n", msg_cseq, leg);
-		return msg_cseq;
+		LM_DBG("found cseq [%u]->[%u] in map for leg [%d]\n", map->msg, map->gen, leg);
+		return map->gen;
 	}
 	LM_DBG("no cseq found in map for leg [%d]\n", leg);
 	return 0;
@@ -2028,7 +2075,7 @@ void dlg_onroute(struct sip_msg* req, str *route_params, void *param)
 	if (new_state==DLG_STATE_DELETED && old_state==DLG_STATE_DELETED) {
 		/* a request after dialog termination */
 		/* within dialog request */
-		run_dlg_callbacks(DLGCB_REQ_WITHIN, dlg, req, dir, NULL, 0, 1);
+		run_dlg_callbacks(DLGCB_REQ_WITHIN, dlg, req, dir, dst_leg, NULL, 0, 1);
 
 		/* update the cseq */
 		dlg_lock (d_table,d_entry);
@@ -2149,7 +2196,7 @@ after_unlock5:
 		}
 
 		/* dialog terminated (BYE) */
-		run_dlg_callbacks(DLGCB_TERMINATED, dlg, req, dir, NULL, 0, is_active);
+		run_dlg_callbacks(DLGCB_TERMINATED, dlg, req, dir, dst_leg, NULL, 0, is_active);
 
 		/* delete the dialog from DB */
 		if (should_remove_dlg_db())
@@ -2174,7 +2221,7 @@ after_unlock5:
 		}
 
 		/* within dialog request */
-		run_dlg_callbacks(DLGCB_REQ_WITHIN, dlg, req, dir, NULL, 0, 1);
+		run_dlg_callbacks(DLGCB_REQ_WITHIN, dlg, req, dir, dst_leg, NULL, 0, 1);
 
 		/* update timer during sequential request? */
 		if (dlg->lifetime_dirty) {
@@ -2249,11 +2296,6 @@ after_unlock5:
 				LM_DBG("incrementing last_gen_cseq to [%d]\n",
 					dlg->legs[dst_leg].last_gen_cseq);
 				if (req->first_line.u.request.method_value == METHOD_INVITE) {
-					/* save INVITE cseq, in case any requests follow after this
-					( pings or other in-dialog requests until the ACK comes in */
-					LM_DBG("dlg_leg_push_cseq_map(dlg, [%d], [INVITE])\n", dst_leg);
-					dlg_leg_push_cseq_map(dlg, dst_leg, req);
-
 					/* Received RE-INVITE where we mangle the CSEQ due to existing pings sent
 					 *
 					 * Set the FL_USE_UAC_CSEQ flag so that the TM build_local knows to get the
@@ -2270,13 +2312,6 @@ after_unlock5:
 					ok = 0;
 				}
 			} else {
-				if (req->first_line.u.request.method_value == METHOD_INVITE) {
-					/* we did not generate any pings yet - still we need to store the INV cseq,
-					in case there's a race between the ACK for the INVITE and sending of new pings */
-					LM_DBG("dlg_leg_push_cseq_map(dlg, [%d], [INVITE])\n", dst_leg);
-					dlg_leg_push_cseq_map(dlg, dst_leg, req);
-				}
-
 				dlg_unlock( d_table, d_entry );
 			}
 
@@ -2291,11 +2326,12 @@ after_unlock5:
 		} else {
 
 			dlg_lock (d_table, d_entry);
+			src_leg = other_leg(dlg, dst_leg);
 
 			if (dlg->legs[dst_leg].last_gen_cseq ||
-			dlg->legs[dst_leg].cseq_maps) {
-				LM_DBG("dlg_leg_get_cseq(dlg, [%d], req)\n", dst_leg);
-				update_val = dlg_leg_get_cseq(dlg, dst_leg, req);
+			dlg->legs[src_leg].cseq_maps) {
+				LM_DBG("dlg_leg_get_cseq(dlg, [%d], req)\n", src_leg);
+				update_val = dlg_leg_get_cseq(dlg, src_leg, req);
 				if (update_val == 0) {
 					LM_DBG("dlg->legs[%d].last_gen_cseq=[%d]\n",
 						dst_leg, dlg->legs[dst_leg].last_gen_cseq);
@@ -2342,6 +2378,7 @@ after_unlock5:
 				}
 
 				wrap->dlg = dlg;
+				wrap->dst_leg = dst_leg;
 				wrap->cseq.s = (char *)(wrap + 1);
 				wrap->cseq.len = msg_cseq->len;
 				memcpy(wrap->cseq.s,msg_cseq->s,msg_cseq->len);
@@ -2376,7 +2413,7 @@ early_check:
 	if ( (event==DLG_EVENT_REQPRACK || event == DLG_EVENT_REQ ||
 			event == DLG_EVENT_REQBYE) && new_state==DLG_STATE_EARLY) {
 		/* within dialog request */
-		run_dlg_callbacks(DLGCB_REQ_WITHIN, dlg, req, dir, NULL, 0, 1);
+		run_dlg_callbacks(DLGCB_REQ_WITHIN, dlg, req, dir, dst_leg, NULL, 0, 1);
 
 		LM_DBG("EARLY event %d successfully processed (dst_leg=%d)\n",
 			event,dst_leg);
@@ -2554,7 +2591,7 @@ void dlg_ontimeout(struct dlg_tl *tl)
 		if (push_new_processing_context(dlg, &old_ctx, &new_ctx, &fake_msg)==0) {
 			if (do_expire_actions)
 				run_dlg_callbacks(DLGCB_EXPIRED, dlg, fake_msg,
-					DLG_DIR_NONE, NULL, 0, do_expire_actions);
+					DLG_DIR_NONE, -1, NULL, 0, do_expire_actions);
 
 			if (current_processing_ctx == NULL)
 				*new_ctx = NULL;
@@ -2728,6 +2765,7 @@ int fix_route_dialog(struct sip_msg *req,struct dlg_cell *dlg)
 				pkg_free(route);
 				return -1;
 			}
+			req->msg_flags |= FL_HAS_ROUTE_LUMP;
 
 			LM_DBG("Setting route  header to <%s> \n",route);
 
@@ -2821,6 +2859,7 @@ int fix_route_dialog(struct sip_msg *req,struct dlg_cell *dlg)
 					return -1;
 				}
 				free_rr(&head);
+				req->msg_flags |= FL_HAS_ROUTE_LUMP;
 			}
 
 			if (lmp == NULL) {
@@ -2853,6 +2892,7 @@ int fix_route_dialog(struct sip_msg *req,struct dlg_cell *dlg)
 					pkg_free(remote_contact);
 					return -1;
 				}
+				req->msg_flags |= FL_HAS_ROUTE_LUMP;
 			}
 		}
 	}

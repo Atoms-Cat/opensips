@@ -433,35 +433,36 @@ static const mi_export_t mi_cmds[] = {
 		{mi_send_sequential_dlg, {"callid", "mode", "body", 0}},
 		{mi_send_sequential_dlg, {"callid", "method", "body", 0}},
 		{mi_send_sequential_dlg, {"callid", "method", "body", "mode", 0}},
+		{mi_send_sequential_dlg, {"callid", "method", "body", "mode", "headers", 0}},
 		{EMPTY_MI_RECIPE}}
 	},
 	{EMPTY_MI_EXPORT}
 };
 
 static const pv_export_t mod_items[] = {
-	{ {"DLG_count",  sizeof("DLG_count")-1},     1000, pv_get_dlg_count,
+	{ str_const_init("DLG_count"),     1000, pv_get_dlg_count,
 		0,                 0, 0, 0, 0 },
-	{ {"DLG_lifetime",sizeof("DLG_lifetime")-1}, 1000, pv_get_dlg_lifetime,
+	{ str_const_init("DLG_lifetime"), 1000, pv_get_dlg_lifetime,
 		0,                 0, 0, 0, 0 },
-	{ {"DLG_status",  sizeof("DLG_status")-1},   1000, pv_get_dlg_status,
+	{ str_const_init("DLG_status"),   1000, pv_get_dlg_status,
 		0,                 0, 0, 0, 0 },
-	{ {"DLG_dir",     sizeof("DLG_dir")-1},      1000, pv_get_dlg_dir,
+	{ str_const_init("DLG_dir"),      1000, pv_get_dlg_dir,
 		0,                 0, 0, 0, 0},
-	{ {"DLG_flags",   sizeof("DLG_flags")-1},    1000, pv_get_dlg_flags,
+	{ str_const_init("DLG_flags"),    1000, pv_get_dlg_flags,
 		pv_set_dlg_flags,  0, 0, 0, 0 },
-	{ {"dlg_val",     sizeof("dlg_val")-1},      1000, pv_get_dlg_val,
+	{ str_const_init("dlg_val"),      1000, pv_get_dlg_val,
 		pv_set_dlg_val,    pv_parse_name, 0, 0, 0},
-	{ {"DLG_did",     sizeof("DLG_did")-1},      1000, pv_get_dlg_did,
+	{ str_const_init("DLG_did"),      1000, pv_get_dlg_did,
 		0,                 0, 0, 0, 0},
-	{ {"DLG_end_reason",     sizeof("DLG_end_reason")-1},    1000,
+	{ str_const_init("DLG_end_reason"),    1000,
 		pv_get_dlg_end_reason,0,0, 0, 0, 0},
-	{ {"DLG_timeout",        sizeof("DLG_timeout")-1},       1000,
+	{ str_const_init("DLG_timeout"),       1000,
 		pv_get_dlg_timeout, pv_set_dlg_timeout,  0, 0, 0, 0 },
-	{ {"DLG_json",        sizeof("DLG_json")-1},       1000,
+	{ str_const_init("DLG_json"),       1000,
 		pv_get_dlg_json, 0,  0, 0, 0, 0 },
-	{ {"DLG_ctx_json",        sizeof("DLG_ctx_json")-1},       1000,
+	{ str_const_init("DLG_ctx_json"),       1000,
 		pv_get_dlg_ctx_json, 0,  0, 0, 0, 0 },
-	{ {"DLG_del_delay",     sizeof("DLG_del_delay")-1},       1000,
+	{ str_const_init("DLG_del_delay"),       1000,
 		pv_get_dlg_deldelay, pv_set_dlg_deldelay,  0, 0, 0, 0 },
 	{ {0, 0}, 0, 0, 0, 0, 0, 0, 0 }
 };
@@ -1885,7 +1886,7 @@ int pv_set_dlg_deldelay(struct sip_msg *msg, pv_param_t *param,
 }
 
 
-#define DLG_CTX_JSON_BUFF_SIZE 8192
+#define DLG_CTX_JSON_BUFF_SIZE 32768
 #define DEC_AND_CHECK_LEN(_curr,_size)			\
 	 do {						\
 		_curr-=_size; 				\

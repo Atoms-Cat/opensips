@@ -126,6 +126,8 @@ enum request_method {
 #define FL_BODY_NO_SDP       (1<<20) /* message does not have an SDP body */
 #define FL_IS_LOCAL          (1<<21) /* the message is a locally generated
                                       * one, not received */
+#define FL_HAS_ROUTE_LUMP    (1<<22) /* the message had Route headers added
+                                      * as lumps */
 
 /* define the # of unknown URI parameters to parse */
 #define URI_MAX_U_PARAMS 10
@@ -296,7 +298,7 @@ struct sip_msg {
 	unsigned int ruri_bflags; /* per-branch flags for RURI*/
 
 	/* force sending on this socket */
-	struct socket_info* force_send_socket;
+	const struct socket_info* force_send_socket;
 
 	/* path vector to generate Route hdrs */
 	str path_vec;
@@ -355,9 +357,13 @@ extern int via_cnt;
 
 int parse_msg(char* buf, unsigned int len, struct sip_msg* msg);
 
-int parse_headers(struct sip_msg* msg, hdr_flags_t flags, int next);
+#define parse_headers(msg, flags,next) 	parse_headers_aux(msg,flags,next, 1)
 
-char* get_hdr_field(char* buf, char* end, struct hdr_field* hdr);
+int parse_headers_aux(struct sip_msg* msg, hdr_flags_t flags, int next, int sip_well_known_parse);
+
+#define get_hdr_field(buf,end,hdr)	get_hdr_field_aux(buf,end,hdr,1)
+
+char* get_hdr_field_aux(char* buf, char* end, struct hdr_field* hdr, int sip_well_known_parse);
 
 void free_sip_msg(struct sip_msg* msg);
 

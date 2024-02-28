@@ -47,8 +47,8 @@
 
 struct tm_binds {
 	register_tmcb_f  register_tmcb;
-	cmd_function     t_relay;
-	cmd_function     t_check_trans;
+	trelay_f         t_relay;
+	tcheck_trans_f   t_check_trans;
 
 	/* Return:
 	 *		1 (success)
@@ -83,6 +83,7 @@ struct tm_binds {
 	free_dlg_f         free_dlg;
 	print_dlg_f        print_dlg;
 	tgett_f            t_gett;
+	tsett_f            t_sett;
 	tgett_f            t_get_e2eackt;
 	tget_picked_f      t_get_picked;
 	tset_remotet_f     t_set_remote_t;

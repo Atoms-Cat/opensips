@@ -25,8 +25,8 @@
 #include "../../locking.h"
 #include "../../lib/list.h"
 
-#include "aaa_impl.h"
-#include "peer.h"
+#include "dm_impl.h"
+#include "dm_peer.h"
 #include "app_opensips/avps.h"
 
 #define EVENT_RECORD        1
@@ -40,6 +40,7 @@ pthread_mutex_t *msg_send_lk;
 
 extern str dm_realm;
 extern str dm_peer_identity;
+
 
 int dm_init_peer(void)
 {
@@ -62,6 +63,9 @@ int dm_init_peer(void)
 	msg_send_cond = &wrap->cond;
 
 	init_mutex_cond(msg_send_lk, msg_send_cond);
+
+	INIT_LIST_HEAD(&dm_unreplied_req);
+	lock_init(&dm_unreplied_req_lk);
 	return 0;
 }
 
@@ -473,6 +477,7 @@ static int dm_custom_req(struct dm_message *msg)
 		LM_ERR("failed to pack AVPs\n");
 		return -1;
 	}
+
 	/* check if we already have a Session-Id in the message - if so, use it! */
 	rc = fd_msg_search_avp(dmsg, dm_dict.Session_Id, &avp);
 	if (rc != 0) {
@@ -504,7 +509,47 @@ static int dm_custom_req(struct dm_message *msg)
 }
 
 
-static inline int diameter_send_msg(struct dm_message *msg)
+static int dm_custom_rpl(struct dm_message *dm)
+{
+	struct msg *ans = (struct msg *)dm->fd_req;
+	int rc;
+
+	if (dm_remove_unreplied_req(ans) != 0) {
+		LM_ERR("unable to build answer, request is no longer available "
+		        "(timeout: %d s)\n", dm_unreplied_req_timeout);
+		return -1;
+	}
+
+	rc = fd_msg_new_answer_from_req(fd_g_config->cnf_dict, &ans, 0);
+	if (rc != 0) {
+		LM_ERR("failed to create answer message, error: %d\n", rc);
+		goto error;
+	}
+
+	/* App id */
+	{
+		struct msg_hdr *h;
+		FD_CHECK(fd_msg_hdr(ans, &h));
+		h->msg_appl = dm->app_id;
+	}
+
+	/* include all AVPs passed from script level */
+	if (dm_pack_avps(ans, &dm->avps) != 0) {
+		LM_ERR("failed to pack AVPs\n");
+		return -1;
+	}
+
+	FD_CHECK(fd_msg_send(&ans, NULL, NULL));
+	FD_CHECK(fd_msg_free(ans));
+	return 0;
+
+error:
+	fd_msg_free(ans);
+	return -1;
+}
+
+
+static inline int dm_peer_send_msg(struct dm_message *msg)
 {
 	aaa_message *am = msg->am;
 
@@ -513,8 +558,10 @@ static inline int diameter_send_msg(struct dm_message *msg)
 		return dm_auth(msg);
 	case AAA_ACCT:
 		return dm_acct(msg);
-	case AAA_CUSTOM:
+	case AAA_CUSTOM_REQ:
 		return dm_custom_req(msg);
+	case AAA_CUSTOM_RPL:
+		return dm_custom_rpl(msg);
 	default:
 		LM_ERR("unsupported AAA message type (%d), skipping\n", am->type);
 	}
@@ -565,9 +612,11 @@ static int dm_prepare_globals(void)
 }
 
 
-void diameter_peer_loop(int _)
+void dm_peer_loop(int _)
 {
 	struct dm_message *msg;
+
+	LM_INFO("freeDiameter dedicated process starting...\n");
 
 	if (freeDiameter_init() != 0) {
 		LM_ERR("failed to init freeDiameter library\n");
@@ -581,6 +630,11 @@ void diameter_peer_loop(int _)
 
 	__FD_CHECK(dm_register_callbacks(), 0, );
 	__FD_CHECK(fd_core_start(), 0, );
+
+	if (dm_init_reply_cond(-2) != 0) {
+		LM_ERR("failed to init cond\n");
+		return;
+	}
 
 	pthread_mutex_lock(msg_send_lk);
 
@@ -597,7 +651,7 @@ void diameter_peer_loop(int _)
 		msg = list_entry(msg_send_queue->next, struct dm_message, list);
 		list_del(&msg->list);
 
-		if (diameter_send_msg(msg) != 0)
+		if (dm_peer_send_msg(msg) != 0)
 			LM_ERR("failed to send message\n");
 		else
 			LM_DBG("successfully sent\n");

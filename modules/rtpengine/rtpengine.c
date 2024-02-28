@@ -305,6 +305,7 @@ static int rtpengine_api_copy_delete(struct rtp_relay_session *sess,
 		struct rtp_relay_server *server, void *_ctx, str *flags);
 static int rtpengine_api_copy_serialize(void *_ctx, bin_packet_t *packet);
 static int rtpengine_api_copy_deserialize(void **_ctx, bin_packet_t *packet);
+static void rtpengine_api_copy_release(void **_ctx);
 
 static int parse_flags(struct ng_flags_parse *, struct sip_msg *, enum rtpe_operation *, const char *);
 
@@ -668,10 +669,10 @@ static int pv_rtpengine_index(pv_spec_p sp, const str *in)
 }
 
 static const pv_export_t mod_pvs[] = {
-	{{"rtpstat", (sizeof("rtpstat")-1)}, /* RTP-Statistics */
+	{str_const_init("rtpstat"), /* RTP-Statistics */
 		1000, pv_get_rtpstat_f, 0, pv_parse_rtpstat,
 		pv_rtpengine_index, pv_rtpengine_stats_used, 0},
-	{{"rtpquery", (sizeof("rtpquery")-1)},
+	{str_const_init("rtpquery"),
 		1000, pv_get_rtpquery_f, 0, 0, 0, pv_rtpengine_stats_used, 0},
 	{{0, 0}, 0, 0, 0, 0, 0, 0, 0}
 };
@@ -1431,7 +1432,7 @@ static mi_response_t *mi_teardown_call(const mi_params_t *params,
 		return init_mi_error(400, MI_SSTR("Empty callid"));
 
 	/* try to "resolve" the callid first through rtp_relay */
-	if (rtp_relay.get_dlg_ids(&callid, &h_entry, &h_id) == 0)
+	if (!rtp_relay.get_dlg_ids || rtp_relay.get_dlg_ids(&callid, &h_entry, &h_id) == 0)
 		pcallid = &callid; /* search for callid, if dialog was not found */
 	if (dlgb.terminate_dlg(pcallid, h_entry, h_id, _str("MI Termination")) < 0)
 		return init_mi_error(500, MI_SSTR("Failed to terminate dialog"));
@@ -1487,6 +1488,7 @@ static int mod_preinit(void)
 		.copy_delete = rtpengine_api_copy_delete,
 		.copy_serialize = rtpengine_api_copy_serialize,
 		.copy_deserialize = rtpengine_api_copy_deserialize,
+		.copy_release = rtpengine_api_copy_release,
 	};
 	if (!pv_parse_spec(&rtpengine_relay_pvar_str, &media_pvar))
 		return -1;
@@ -2367,14 +2369,14 @@ static int parse_flags(struct ng_flags_parse *ng_flags, struct sip_msg *msg,
 		if (!val.s) {
 			bitem = bencode_str(bencode_item_buffer(ng_flags->flags), &key);
 			if (!bitem) {
-				err = "no more memory";
+				err = "no more memory for list value";
 				goto error;
 			}
 			BCHECK(bencode_list_add(ng_flags->flags, bitem));
 		} else {
 			bitem = bencode_str(bencode_item_buffer(ng_flags->dict), &val);
 			if (!bitem) {
-				err = "no more memory";
+				err = "no more memory for dict value";
 				goto error;
 			}
 			BCHECK(bencode_dictionary_add_len(ng_flags->dict, key.s, key.len, bitem));
@@ -2391,7 +2393,7 @@ static int parse_flags(struct ng_flags_parse *ng_flags, struct sip_msg *msg,
 			BCHECK(bencode_list_add(ng_flags->direction, bitem));
 			bitem = bencode_str(bencode_item_buffer(ng_flags->direction), &outiface);
 			if (!bitem) {
-				err = "no more memory";
+				err = "no more memory for direction";
 				goto error;
 			}
 			BCHECK(bencode_list_add(ng_flags->direction, bitem));
@@ -2478,19 +2480,14 @@ static bencode_item_t *rtpe_function_call(bencode_buffer_t *bencbuf, struct sip_
 		if (ng_flags.to_tag.len)
 			to_tag_exist = 1;
 	}
+	if (!flags_exist)
+		ng_flags.flags = bencode_list(bencbuf);
 	if (op == OP_OFFER || op == OP_ANSWER) {
-		if (!flags_exist)
-			ng_flags.flags = bencode_list(bencbuf);
 		ng_flags.direction = bencode_list(bencbuf);
 		ng_flags.replace = bencode_list(bencbuf);
 		ng_flags.rtcp_mux = bencode_list(bencbuf);
 
 		bencode_dictionary_add_str(ng_flags.dict, "sdp", body_in);
-	} else if (!flags_exist &&
-		(op == OP_BLOCK_DTMF || op == OP_UNBLOCK_DTMF ||
-		 op == OP_BLOCK_MEDIA || op == OP_UNBLOCK_MEDIA ||
-		 op == OP_START_FORWARD || op == OP_STOP_FORWARD)) {
-			ng_flags.flags = bencode_list(bencbuf);
 	} else if (op == OP_SUBSCRIBE_ANSWER) {
 		bencode_dictionary_add_str(ng_flags.dict, "sdp", body_in);
 	}
@@ -4438,8 +4435,6 @@ static int rtpengine_api_copy_delete(struct rtp_relay_session *sess,
 	bencode_item_t *ret;
 	ret = rtpengine_api_copy_op(sess, OP_UNSUBSCRIBE,
 			server, subs, flags, 0, NULL);
-	if (subs)
-		shm_free(subs);
 	if (!ret)
 		return -1;
 	bencode_buffer_free(bencode_item_buffer(ret));
@@ -4448,13 +4443,17 @@ static int rtpengine_api_copy_delete(struct rtp_relay_session *sess,
 
 static int rtpengine_api_copy_serialize(void *_ctx, bin_packet_t *packet)
 {
-	return bin_push_str(packet, (str *)_ctx);
+	str str_empty = str_init("");
+	if (!_ctx)
+		return bin_push_str(packet, &str_empty);
+	else
+		return bin_push_str(packet, (str *)_ctx);
 }
 
 static int rtpengine_api_copy_deserialize(void **_ctx, bin_packet_t *packet)
 {
 	str to_tag;
-	if (bin_pop_str(packet, &to_tag) < 0)
+	if (bin_pop_str(packet, &to_tag) < 0 || to_tag.len == 0)
 		return -1;
 
 	*_ctx = rtpengine_new_subs(&to_tag);
@@ -4462,6 +4461,14 @@ static int rtpengine_api_copy_deserialize(void **_ctx, bin_packet_t *packet)
 		return -1;
 	else
 		return 1;
+}
+
+static void rtpengine_api_copy_release(void **ctx)
+{
+	if (*ctx) {
+		shm_free(*ctx);
+		*ctx = NULL;
+	}
 }
 
 static inline void raise_rtpengine_status_event(struct rtpe_node *node)

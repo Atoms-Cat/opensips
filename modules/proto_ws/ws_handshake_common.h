@@ -103,7 +103,7 @@
 	"Sec-WebSocket-Protocol: " WS_PROTO_SIP HTTP_END
 #define HTTP_HANDSHAKE_END_LEN (sizeof(HTTP_HANDSHAKE_END) - 1)
 
-#define MAX_HOST_LEN IP_ADDR_MAX_STR_SIZE /*IP*/ + 1 /*':'*/ + 5 /*65535*/
+#define MAX_HOST_LEN IP_ADDR_MAX_STR_SIZE /*IP*/ + 2 /* '[' & ']' for ipv6 */ + 1 /*':'*/ + 5 /*65535*/
 
 #include "../../sha1.h"
 
@@ -523,8 +523,10 @@ static int ws_server_handshake(struct tcp_connection *con)
 		}
 
 		con->msg_attempts = 0;
-		if (req != &_ws_common_tcp_current_req)
-			pkg_free(req);
+		if (req != &_ws_common_tcp_current_req) {
+			shm_free(req);
+			con->con_req = NULL;
+		}
 
 		/* handshake now completed, destroy the handshake data */
 		WS_STATE(con) = WS_CON_HANDSHAKE_DONE;
@@ -549,7 +551,7 @@ static int ws_server_handshake(struct tcp_connection *con)
 	if (!req->complete && (req == &_ws_common_tcp_current_req)) {
 		/* let's duplicate this - most likely another conn will come in */
 
-		con->con_req = pkg_malloc(sizeof(struct tcp_req));
+		con->con_req = shm_malloc(sizeof(struct tcp_req));
 		if (con->con_req == NULL) {
 			LM_ERR("No more mem for dynamic con request buffer\n");
 			goto error;
@@ -596,7 +598,7 @@ error:
 	if (WS_STATE(con) == WS_CON_BAD_REQ)
 		ws_bad_handshake(con);
 	if (req != &_ws_common_tcp_current_req) {
-		pkg_free(req);
+		shm_free(req);
 		con->con_req = NULL;
 	}
 	return -1;
@@ -842,7 +844,7 @@ static int ws_parse_req_handshake(struct tcp_connection *c, char *msg, int len)
 	memset(&tmp_msg, 0, sizeof(struct sip_msg));
 	tmp_msg.len = len;
 	tmp_msg.buf = tmp_msg.unparsed = msg;
-	if (parse_headers(&tmp_msg, HDR_EOH_F, 0) < 0) {
+	if (parse_headers_aux(&tmp_msg, HDR_EOH_F, 0,0) < 0) {
 		LM_ERR("cannot parse headers\n%.*s\n", len, msg);
 		goto error;
 	}
@@ -1120,7 +1122,7 @@ static int ws_parse_rpl_handshake(struct tcp_connection *c, char *msg, int len)
 	memset(&tmp_msg, 0, sizeof(struct sip_msg));
 	tmp_msg.len = len;
 	tmp_msg.buf = tmp_msg.unparsed = msg;
-	if (parse_headers(&tmp_msg, HDR_EOH_F, 0) < 0) {
+	if (parse_headers_aux(&tmp_msg, HDR_EOH_F, 0, 0) < 0) {
 		LM_ERR("cannot parse headers\n%.*s\n", len, msg);
 		goto error;
 	}
@@ -1271,6 +1273,7 @@ static int ws_start_handshake(struct tcp_connection *c)
 	char *port;
 	int port_len;
 	static char host_orig_buf[MAX_HOST_LEN];
+	char *h;
 
 	str trace_str = { ws_trace_buf, 0 };
 
@@ -1301,14 +1304,21 @@ static int ws_start_handshake(struct tcp_connection *c)
 	ip = ip_addr2a(&c->rcv.src_ip);
 	port = int2str(c->rcv.src_port, &port_len);
 	n = strlen(ip);
-	memcpy(host_orig_buf, ip, n);
-	host_orig_buf[n] = ':';
-	memcpy(host_orig_buf + n + 1, port, port_len);
+	h = host_orig_buf;
+	if (c->rcv.src_ip.af == AF_INET6)
+		*h++ = '[';
+	memcpy(h, ip, n);
+	h += n;
+	if (c->rcv.src_ip.af == AF_INET6)
+		*h++ = ']';
+	*h++ = ':';
+	memcpy(h, port, port_len);
+	h += port_len;
 
 	iov[2].iov_base = _ws_common_resource.s;
 	iov[2].iov_len = _ws_common_resource.len;
 
-	iov[7].iov_len = n + port_len + 1;
+	iov[7].iov_len = h - host_orig_buf;
 	iov[10].iov_len = iov[7].iov_len;
 
 	iov[13].iov_base = WS_KEY(c).s;

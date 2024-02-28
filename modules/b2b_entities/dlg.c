@@ -1004,25 +1004,29 @@ search_dialog:
 			&to_tag, &from_tag, &callid);
 		if(dlg== NULL)
 		{
-			LM_DBG("No dialog found\n");
-			if(method_value != METHOD_ACK)
+			/* this is a requests which is 100% for the B2B engine, but
+			 * it is not matching any ongoing/active dialogs ->
+			 * -> we should reject with 481 and discard */
+			LM_DBG("No dialog found, callid= [%.*s], method=%.*s\n",
+				callid.len, callid.s,msg->first_line.u.request.method.len,
+				msg->first_line.u.request.method.s);
+			if(method_value == METHOD_ACK)
 			{
-				str ok = str_init("OK");
-
-				if(method_value == METHOD_BYE)
-					tmb.t_reply(msg, 200, &ok);
-				else
-					LM_ERR("No dialog found, callid= [%.*s], method=%.*s\n",
-						callid.len, callid.s,msg->first_line.u.request.method.len,
-						msg->first_line.u.request.method.s);
-			} else {
 				tmb.t_newtran(msg);
 				tm_tran = tmb.t_gett();
 				if (tm_tran && tm_tran!=T_UNDEFINED)
 					tmb.unref_cell(tm_tran);
+			} else
+			if(method_value == METHOD_BYE)
+			{
+				str ok = str_init("OK");
+				tmb.t_reply(msg, 200, &ok);
+			} else {
+				str ko = str_init("Call/Transaction Does Not Exist");
+				tmb.t_reply(msg, 481, &ko);
 			}
 			B2BE_LOCK_RELEASE(table, hash_index);
-			return SCB_RUN_ALL;
+			return SCB_DROP_MSG;
 		}
 	}
 
@@ -1169,67 +1173,116 @@ logic_notify:
 					tmb.t_setkr(REQ_FWDED);
 				}
 
-				if(dlg->uas_tran && dlg->uas_tran!=T_UNDEFINED)
+				if(dlg->uac_tran && dlg->uac_tran!=T_UNDEFINED)
 				{
-					if(dlg->uas_tran->uas.request)
-					/* there is another transaction for which no reply
-					 * was sent out */
+					/* We have an UAC ongoing transaction in the dialog
+					 * -> reject with 491 Request Pending */
+					/* send reply */
+					LM_DBG("Received a request while having an ongoing "
+						"outbound/UAC one\n");
+					str text = str_init("Request Pending");
+					if(tmb.t_reply_with_body( tm_tran, 491,
+					&text, 0, 0, &to_tag) < 0)
 					{
-						if (method_value != METHOD_BYE) {
-							/* send reply */
-							LM_DBG("Received another request when the previous "
-								"one was in process\n");
-							str text = str_init("Request Pending");
-							if(tmb.t_reply_with_body( tm_tran, 491,
-							&text, 0, 0, &to_tag) < 0)
-							{
-								LM_ERR("failed to send reply with tm\n");
-							}
-							LM_DBG("Sent reply [491] and unreffed the cell %p\n",
-								tm_tran);
-						} else {
-							LM_DBG("Received BYE while another request "
-								"was in process\n");
-							str text_ok = str_init("OK");
-							if(tmb.t_reply_with_body( tm_tran, 200,
-							&text_ok, 0, 0, &to_tag) < 0)
-							{
-								LM_ERR("failed to send reply with tm\n");
-							}
-							LM_DBG("Sent reply [200] and unreffed the cell %p\n",
-								tm_tran);
-							tmb.unref_cell(tm_tran);
-
-							str text_term = str_init("Request Terminated");
-							if(tmb.t_reply_with_body(dlg->uas_tran, 487,
-							&text_term, 0, 0, &to_tag) < 0)
-							{
-								LM_ERR("failed to send reply with tm\n");
-							}
-							LM_DBG("Sent reply [487] and unreffed the cell %p\n",
-								dlg->uas_tran);
-
-							tmb.unref_cell(dlg->uas_tran);
-							dlg->uas_tran = NULL;
-
-							b2b_cb_flags |= B2B_NOTIFY_FL_TERM_BYE;
-							goto run_cb;
-						}
+						LM_ERR("failed to send reply with tm\n");
 					}
+					LM_DBG("Sent reply [491] and unreffed the cell %p\n",
+						tm_tran);
+
 					tmb.unref_cell(tm_tran); /* for t_newtran() */
 					B2BE_LOCK_RELEASE(table, hash_index);
 					return SCB_DROP_MSG;
+				} else
+				if(dlg->uas_tran && dlg->uas_tran!=T_UNDEFINED)
+				{
+					if (method_value != METHOD_BYE) {
+						/* We have another UAS ongoing transaction on the dialog
+						 * -> reject with 500, "Overlapping Requests" */
+						#define RETRY_AFTER_HDR "Retry-After: "
+						#define RETRY_AFTER_HDR_LEN (sizeof("Retry-After: ")-1)
+						char ra_s[RETRY_AFTER_HDR_LEN + 3 + CRLF_LEN];
+						str ra = {ra_s, 0};
+						str text = str_init("Overlapping Requests");
+						LM_DBG("Received another request when the previous "
+								"one was in process\n");
+						memcpy( ra.s+ra.len, RETRY_AFTER_HDR, RETRY_AFTER_HDR_LEN);
+						ra.len += RETRY_AFTER_HDR_LEN;
+						/* the retry value is between 0 and 10 */
+						ra.len += btostr(ra.s+ra.len, (unsigned char)(rand()%10) );
+						memcpy( ra.s+ra.len, CRLF, CRLF_LEN);
+						ra.len += CRLF_LEN;
+						/* send reply */
+						if(tmb.t_reply_with_body( tm_tran, 500,
+						&text, 0, &ra, &to_tag) < 0)
+						{
+							LM_ERR("failed to send reply with tm\n");
+						}
+						LM_DBG("Sent reply [500] and unreffed the cell %p\n",
+							tm_tran);
+						tmb.unref_cell(tm_tran); /* for t_newtran() */
+						B2BE_LOCK_RELEASE(table, hash_index);
+						return SCB_DROP_MSG;
+					} else {
+						LM_DBG("Received BYE while having an ongoing "
+							"inbound/UAS transaction\n");
+						str text_ok = str_init("OK");
+						if(tmb.t_reply_with_body( tm_tran, 200,
+						&text_ok, 0, 0, &to_tag) < 0)
+						{
+							LM_ERR("failed to send reply with tm\n");
+						}
+						LM_DBG("Sent reply [200] and unreffed the cell %p\n",
+							tm_tran);
+						tmb.unref_cell(tm_tran);
+
+						str text_term = str_init("Request Terminated");
+						if(tmb.t_reply_with_body(dlg->uas_tran, 487,
+						&text_term, 0, 0, &to_tag) < 0)
+						{
+							LM_ERR("failed to send reply with tm\n");
+						}
+						LM_DBG("Sent reply [487] and unreffed the cell %p\n",
+							dlg->uas_tran);
+
+						tmb.unref_cell(dlg->uas_tran);
+						dlg->uas_tran = NULL;
+
+						b2b_cb_flags |= B2B_NOTIFY_FL_TERM_BYE;
+						goto run_cb;
+					}
 				}
+
+				/* the new request is accepted for handling */
 				dlg->uas_tran = tm_tran;
 				LM_DBG("Saved uas_tran=[%p] for dlg[%p]\n", tm_tran, dlg);
 			}
 		}
 		else
 		{
-			if (dlg->uas_tran) {
-				tmb.t_release_trans(dlg->uas_tran);
-				tmb.unref_cell(dlg->uas_tran);
-				dlg->uas_tran = NULL;
+			ret = tmb.t_check_trans(msg);
+			switch (ret) {
+				case 1: /* hop-by-hop ACK */
+					tm_tran = tmb.t_gett();
+					/* just grab the transaction and release it */
+					tmb.t_sett(T_UNDEFINED);
+					break;
+				case -2: /* end-to-end ACK */
+					tm_tran = tmb.t_get_e2eackt();
+					break;
+				default:
+					tm_tran = NULL;
+					break;
+			}
+			/* if we managed to find a coresponding hop-by-hop INVITE transaction
+			 * or it is a valid end-to-end ACK, unlink from the dialog */
+			if (tm_tran && tm_tran != T_UNDEFINED) {
+				if (dlg->uas_tran == tm_tran) {
+					tmb.t_release_trans(dlg->uas_tran);
+					tmb.unref_cell(dlg->uas_tran);
+					dlg->uas_tran = NULL;
+				}
+				if (ret == 1)
+					tmb.unref_cell(tm_tran);
 			}
 
 			ret = tmb.t_newtran(msg);
@@ -1313,8 +1366,12 @@ run_cb:
 			return SCB_DROP_MSG;
 		}
 	} else {
-		b2b_cback(msg, &b2b_key, B2B_REQUEST, logic_key.s?&logic_key:0,
-			dlg->param, b2b_cb_flags);
+		if (!b2b_cback)
+			LM_DBG("calback not yet registered for [%.*s]\n",
+					(logic_key.s?logic_key.len:0), (logic_key.s?logic_key.s:""));
+		else
+			b2b_cback(msg, &b2b_key, B2B_REQUEST, logic_key.s?&logic_key:0,
+				dlg->param, b2b_cb_flags);
 
 		if(logic_key.s)
 			pkg_free(logic_key.s);
@@ -2399,6 +2456,7 @@ int _b2b_send_request(b2b_dlg_t* dlg, b2b_req_data_t* req_data)
 			if(dlg->uac_tran)
 			{
 				struct cell *inv_t;
+				struct cell *bk_t = tmb.t_gett();
 				LM_DBG("send cancel request\n");
 				if (tmb.t_lookup_ident( &inv_t, dlg->uac_tran->hash_index,
 				dlg->uac_tran->label) != 1) {
@@ -2408,6 +2466,7 @@ int _b2b_send_request(b2b_dlg_t* dlg, b2b_req_data_t* req_data)
 				// FIXME - tracing: how do we get to the cancel transaction?
 				ret = tmb.t_cancel_trans( inv_t, &ehdr);
 				tmb.unref_cell(inv_t);
+				tmb.t_sett(bk_t);
 				if (dlg->state > B2B_CONFIRMED)
 					method_value = METHOD_INVITE;
 			}
@@ -3252,7 +3311,7 @@ dummy_reply:
 			dummy_msg.first_line.u.reply.status.len = 3;
 			dummy_fl_buf[11] = ' ';
 
-			memcpy(dummy_fl_buf, "Timeout", 7);
+			memcpy(dummy_fl_buf+12, "Timeout", 7);
 			dummy_msg.first_line.u.reply.reason.s = dummy_fl_buf+12;
 			dummy_msg.first_line.u.reply.reason.len = 7;
 
@@ -3615,8 +3674,12 @@ done1:
 			goto error1;
 		}
 	} else {
-		b2b_cback(msg, b2b_key, B2B_REPLY, logic_key.s?&logic_key:0,
-			b2b_param, b2b_cb_flags);
+		if (!b2b_cback)
+			LM_DBG("calback not yet registered for [%.*s]\n",
+					(logic_key.s?logic_key.len:0), (logic_key.s?logic_key.s:""));
+		else
+			b2b_cback(msg, b2b_key, B2B_REPLY, logic_key.s?&logic_key:0,
+				b2b_param, b2b_cb_flags);
 		if(logic_key.s)
 		{
 			pkg_free(logic_key.s);

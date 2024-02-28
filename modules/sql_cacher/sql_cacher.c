@@ -81,7 +81,7 @@ static const param_export_t mod_params[] = {
 };
 
 static const pv_export_t mod_items[] = {
-	{{"sql_cached_value", sizeof("sql_cached_value") - 1}, 1000,
+	{str_const_init("sql_cached_value"), 1000,
 		pv_get_sql_cached_value, 0, pv_parse_name, 0, 0, 0},
 	{ {0, 0}, 0, 0, 0, 0, 0, 0, 0 }
 };
@@ -480,13 +480,13 @@ static int get_column_types(cache_entry_t *c_entry, db_val_t *values, int nr_col
 		switch (val_type) {
 			case DB_INT:
 			case DB_BIGINT:
-			case DB_DOUBLE:
 				c_entry->nr_ints++;
 				c_entry->column_types &= ~(1LL << i);
 				break;
 			case DB_STRING:
 			case DB_STR:
 			case DB_BLOB:
+			case DB_DOUBLE:
 				c_entry->nr_strs++;
 				c_entry->column_types |= (1LL << i);
 				break;
@@ -516,13 +516,13 @@ static int build_column_types(cache_entry_t *c_entry, db_key_t *names, db_type_t
 		switch (val_type) {
 			case DB_INT:
 			case DB_BIGINT:
-			case DB_DOUBLE:
 				c_entry->nr_ints++;
 				c_entry->column_types &= ~(1LL << i);
 				break;
 			case DB_STRING:
 			case DB_STR:
 			case DB_BLOB:
+			case DB_DOUBLE:
 				c_entry->nr_strs++;
 				c_entry->column_types |= (1LL << i);
 				break;
@@ -556,6 +556,9 @@ static unsigned int get_cdb_val_size(cache_entry_t *c_entry, db_val_t *values, i
 				break;
 			case DB_BLOB:
 				len += VAL_BLOB(values + i).len;
+				break;
+			case DB_DOUBLE:
+				len += DOUBLE2STR_MAX_LEN;
 				break;
 			default: continue;
 		}
@@ -604,9 +607,6 @@ static int insert_in_cachedb(cache_entry_t *c_entry, db_handlers_t *db_hdls,
 			case DB_BIGINT:
 				int_val = (int)VAL_BIGINT(values + i);
 				break;
-			case DB_DOUBLE:
-				int_val = (int)VAL_DOUBLE(values + i);
-				break;
 			default: continue;
 		}
 		if (VAL_NULL(values + i))
@@ -636,6 +636,9 @@ static int insert_in_cachedb(cache_entry_t *c_entry, db_handlers_t *db_hdls,
 				break;
 			case DB_BLOB:
 				str_val = VAL_BLOB(values + i);
+				break;
+			case DB_DOUBLE:
+				str_val.s = double2str(VAL_DOUBLE(values + i), &str_val.len);
 				break;
 			default: continue;
 		}
@@ -860,7 +863,7 @@ static int inc_cache_rld_vers(db_handlers_t *db_hdls, int *rld_vers)
 	memcpy(rld_vers_key.s + db_hdls->c_entry->id.len, "_sql_cacher_reload_vers", 23);
 
 	if (db_hdls->cdbf.add(db_hdls->cdbcon, &rld_vers_key, 1, 0, rld_vers) < 0) {
-		LM_DBG("Failed to increment reload version integer from cachedb\n");
+		LM_ERR("Failed to increment reload version integer from cachedb\n");
 		pkg_free(rld_vers_key.s);
 		return -1;
 	}
@@ -942,11 +945,8 @@ static int load_entire_table(cache_entry_t *c_entry, db_handlers_t *db_hdls,
 	}
 
 	/* anything loaded ? if not, we can do a quick exit here */
-	if (RES_ROW_N(sql_res) == 0) {
-		lock_stop_write(db_hdls->c_entry->ref_lock);
-		db_hdls->db_funcs.free_result(db_hdls->db_con, sql_res);
-		return 0;
-	}
+	if (RES_ROW_N(sql_res) == 0)
+		goto done;
 
 	row = RES_ROWS(sql_res);
 	values = ROW_VALUES(row);
@@ -964,7 +964,7 @@ static int load_entire_table(cache_entry_t *c_entry, db_handlers_t *db_hdls,
 				if (insert_in_cachedb(c_entry, db_hdls, values ,values + 1,
 					reload_vers, ROW_N(row) - 1) < 0) {
 					lock_stop_write(db_hdls->c_entry->ref_lock);
-					return -1;
+					goto error;
 				}
 				loaded_rec++;
 			}
@@ -982,6 +982,7 @@ static int load_entire_table(cache_entry_t *c_entry, db_handlers_t *db_hdls,
 		}
 	} while (RES_ROW_N(sql_res) > 0);
 
+done:
 	lock_stop_write(db_hdls->c_entry->ref_lock);
 
 	db_hdls->db_funcs.free_result(db_hdls->db_con, sql_res);
@@ -1226,7 +1227,8 @@ static mi_item_t *mi_reload(const mi_params_t *params, str *key)
 		}
 	} else {
 		if (load_entire_table(db_hdls->c_entry, db_hdls, 1) < 0) {
-			LM_DBG("Failed to reload table\n");
+			LM_ERR("Failed to reload table %.*s\n", db_hdls->c_entry->table.len,
+				db_hdls->c_entry->table.s);
 			return init_mi_error(500, MI_SSTR("ERROR Reloading SQL database"));
 		}
 	}
@@ -1753,7 +1755,12 @@ static int on_demand_load(pv_name_fix_t *pv_name, str *str_res, int *int_res,
 			*int_res = (int)VAL_BIGINT(values + pv_name->col_nr);
 			break;
 		case DB_DOUBLE:
-			*int_res = (int)VAL_DOUBLE(values + pv_name->col_nr);
+			st.s = double2str(VAL_DOUBLE(values + pv_name->col_nr), &st.len);
+			if (pkg_str_dup(str_res, &st) != 0) {
+				LM_ERR("oom\n");
+				rc = -1;
+				goto out_free_res;
+			}
 			break;
 		default:
 			LM_ERR("Unsupported type for SQL column\n");

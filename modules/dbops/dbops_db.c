@@ -1,4 +1,5 @@
 /*
+ * Copyright (C) 2008-2024 OpenSIPS Solutions
  * Copyright (C) 2004-2006 Voice Sistem SRL
  *
  * This file is part of Open SIP Server (opensips).
@@ -15,12 +16,8 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301,USA
  *
- * History:
- * ---------
- *  2004-10-04  first version (ramona)
- *  2004-11-11  added support for db schemes for avp_db_load (ramona)
  */
 
 
@@ -33,8 +30,8 @@
 #include "../../db/db_insertq.h"
 #include "../../dprint.h"
 #include "../../route.h"
-#include "avpops_parse.h"
-#include "avpops_db.h"
+#include "dbops_parse.h"
+#include "dbops_db.h"
 
 
 static str       def_table;    /* default DB table */
@@ -127,7 +124,7 @@ int add_db_url(modparam_t type, void *val)
 
 
 
-int avpops_db_bind(void)
+int dbops_db_bind(void)
 {
 	unsigned int i;
 
@@ -141,7 +138,7 @@ int avpops_db_bind(void)
 
 		if (!DB_CAPABILITY(db_urls[i].dbf, DB_CAP_ALL)) {
 			LM_CRIT("database modules (%.*s) does not "
-				"provide all functions needed by avpops module\n",
+				"provide all functions needed by dbops module\n",
 				db_urls[i].url.len,db_urls[i].url.s);
 			return -1;
 		}
@@ -149,12 +146,12 @@ int avpops_db_bind(void)
 
 	/*
 	 * we cannot catch the default DB url usage at fixup time
-	 * as we do with the other bunch of extra avpops DB URLs
+	 * as we do with the other bunch of extra dbops DB URLs
 	 *
 	 * so just dig through the whole script tree
 	 */
-	if (is_script_func_used("avp_db_query", 1) ||
-	    is_script_func_used("avp_db_query", 2)) {
+	if (is_script_func_used("db_query", 1) ||
+	    is_script_func_used("db_query", 2)) {
 		if (!DB_CAPABILITY(default_db_url->dbf, DB_CAP_RAW_QUERY)) {
 			LM_ERR("driver for DB URL [default] does not support "
 				   "raw queries!\n");
@@ -162,8 +159,8 @@ int avpops_db_bind(void)
 		}
 	}
 
-	if (is_script_async_func_used("avp_db_query", 1) ||
-	    is_script_async_func_used("avp_db_query", 2)) {
+	if (is_script_async_func_used("db_query", 1) ||
+	    is_script_async_func_used("db_query", 2)) {
 		if (!DB_CAPABILITY(default_db_url->dbf, DB_CAP_ASYNC_RAW_QUERY))
 			LM_WARN("async() calls for DB URL [default] will work "
 			        "in normal mode due to driver limitations\n");
@@ -173,7 +170,7 @@ int avpops_db_bind(void)
 }
 
 
-int avpops_db_init(const str* db_table, str** db_cols)
+int dbops_db_init(const str* db_table, str** db_cols)
 {
 	int i;
 
@@ -207,7 +204,7 @@ error:
 }
 
 
-int avp_add_db_scheme( modparam_t type, void* val)
+int add_avp_db_scheme( modparam_t type, void* val)
 {
 	struct db_scheme *scheme;
 
@@ -227,7 +224,7 @@ int avp_add_db_scheme( modparam_t type, void* val)
 	}
 
 	/* check for duplicates */
-	if ( avp_get_db_scheme(&scheme->name)!=0 )
+	if ( get_avp_db_scheme(&scheme->name)!=0 )
 	{
 		LM_ERR("duplicated scheme name <%.*s>\n",
 			scheme->name.len,scheme->name.s);
@@ -254,7 +251,7 @@ error:
 }
 
 
-struct db_scheme *avp_get_db_scheme (str *name)
+struct db_scheme *get_avp_db_scheme (str *name)
 {
 	struct db_scheme *scheme;
 
@@ -336,7 +333,7 @@ static inline int prepare_selection( str *uuid, str *username, str *domain,
 }
 
 
-db_res_t *db_load_avp(struct db_url *url, str *uuid, str *username,str *domain,
+db_res_t *db_avp_load(struct db_url *url, str *uuid, str *username,str *domain,
 					char *attr, const str *table, struct db_scheme *scheme)
 {
 	static db_key_t   keys_ret[3];
@@ -380,7 +377,7 @@ void db_close_query(struct db_url *url, db_res_t *res )
 }
 
 
-int db_store_avp(struct db_url *url, db_key_t *keys, db_val_t *vals,
+int db_avp_store(struct db_url *url, db_key_t *keys, db_val_t *vals,
 													int n, const str *table)
 {
 	int r;
@@ -402,7 +399,7 @@ int db_store_avp(struct db_url *url, db_key_t *keys, db_val_t *vals,
 
 
 
-int db_delete_avp(struct db_url *url, str *uuid, str *username, str *domain,
+int db_avp_delete(struct db_url *url, str *uuid, str *username, str *domain,
 												char *attr, const str *table)
 {
 	unsigned int  nr_keys_cmp;
@@ -422,7 +419,7 @@ int db_delete_avp(struct db_url *url, str *uuid, str *username, str *domain,
 }
 
 
-int db_query_avp(struct db_url *url, struct sip_msg *msg, str *query,
+int db_query(struct db_url *url, struct sip_msg *msg, str *query,
 														pvname_list_t* dest)
 {
 	db_res_t* db_res = NULL;
@@ -450,7 +447,7 @@ int db_query_avp(struct db_url *url, struct sip_msg *msg, str *query,
 		return 1;
 	}
 
-	if (db_query_avp_print_results(msg, db_res, dest) != 0) {
+	if (db_query_print_results(msg, db_res, dest) != 0) {
 		LM_ERR("failed to print results\n");
 		db_close_query( url, db_res );
 		return -1;
@@ -460,7 +457,7 @@ int db_query_avp(struct db_url *url, struct sip_msg *msg, str *query,
 	return 0;
 }
 
-int db_query_avp_print_results(struct sip_msg *msg, const db_res_t *db_res,
+int db_query_print_results(struct sip_msg *msg, const db_res_t *db_res,
 								pvname_list_t *dest)
 {
 	int_str avp_val;
